@@ -1,32 +1,41 @@
 # Author: Alina Tu
 # Contact: alinat2@uci.edu
-# Last Updated: 1/12/2022
+# Last Updated: 4/12/2023
 # About: This script is the structural analysis of the Maze Learning Individual Differences (MLINDIV) project,
 #        specifically looking at young adult hippocampal subfield volumes/thicknesses and their relationship
 #        with navigation ability.
 
 # Before running analyses in the following sections, run everything in the RUN FIRST section.
 
-# Note: I recommend collapsing/expanding sections using the small arrows on the left pane next to the line numbers.
+# Note if using RStudio: I recommend collapsing/expanding sections using the small arrows on the left pane next to 
+#                        the line numbers.
 
 #### ------------------------------------------------ RUN FIRST ------------------------------------------------ ####
 # Getting started [PACKAGES AND FUNCTIONS]
-install.packages("readxl")
-install.packages("ggplot2")
-install.packages("dplyr")
-install.packages("ggcorrplot")
-install.packages("stringr")
-install.packages("ppcor", repos='http://cran.us.r-project.org')
-install.packages("Hmisc")
+# install.packages("readxl")
+# install.packages("rlang")
+# install.packages("ggplot2")
+# install.packages("tidyr")
+# install.packages("dplyr")
+# install.packages("ggcorrplot")
+# install.packages("stringr")
+# install.packages("ppcor", repos='http://cran.us.r-project.org')
+# install.packages("base64enc")
+# install.packages("Hmisc")
+# install.packages("readr")
+# install.packages("corrplot")
 
 library(readxl)
 library(ggplot2)
+library(tidyr)
 library(dplyr)
 library(corrplot)
 library(ggcorrplot)
 library(stringr)
 library(ppcor)
 library(Hmisc)
+library(readr)
+library(corrplot)
 select <- dplyr::select
 
 read_excel_allsheets <- function(filename, tibble = FALSE) {
@@ -45,89 +54,145 @@ workdir <- "/mnt/chrastil/lab/users/alina/analysis/"
 setwd(workdir)
 
 # Load data
-data <- read_excel("ASHS_volumes.xlsx", sheet = 2)
-  hres_sub_id <- c(81:83, 85, 86, 88, 89, 92:96, 98:103, 106:113) # includes sub-092 (no propcorrect)
-  data$`Spatial Neuro ID` <- hres_sub_id
-  nrow(data) == 26
-data_regT2 <- read_excel("ASHS_volumes.xlsx", sheet = 1)
-  data_regT2$`Spatial Neuro ID` <- hres_sub_id # includes sub-092
-  nrow(data_regT2) == 26
-data_UCSB <- read_excel("YoungHipp_SubfieldVolumes.xlsx")
-data_full <- read_excel("MLINDIV_Subject_Run_Info.xlsx") # full subject log
-data_survey <- read_excel_allsheets("RA_mlindiv_surveys.xlsx") # n=113 for questionnaires
+## Behavioral measures from Maze-Learning task (all participants)
+data_nav_measures <- read.csv("MLINDIV_participant_full.csv") %>% 
+  select("Subject","tm_accuracy","tm_path_efficiencies","tm_path_efficiencies_acc_only", "n_trials")
+colnames(data_nav_measures) <- c("sub_id","propcorrect","patheff","patheff_acc_only","n_completed")
+data_nav_measures <- data_nav_measures[data_nav_measures["n_completed"] >= 36, ] # Removing rows w/ incomplete behavioral data
 
-# Define custom data
-data_full_clean <- data_full[-c(114:125),] # n=113 with demographics/propcorrect
+## Subject log for demographic info (all participants)
+data_full <- read_excel("MLINDIV_Subject_Run_Info.xlsx")
+  names(data_full)[names(data_full) == "Spatial Neuro ID"] <- "sub_id"
+  names(data_full)[names(data_full) == "Sex"] <- "sex"
+  names(data_full)[names(data_full) == "Age"] <- "age"
+  data_full$sub_id <- extract_numeric(data_full$sub_id)
+data_full <- merge(data_full[,c(1:5,7:23)], data_nav_measures[,c(1,2)], by = "sub_id", all = T) 
+data_full_clean <- data_full %>% drop_na("sub_id") # Remove empty rows
 
-full_propcorrect <- data_full_clean$`Proportion Correct (new version)`
-full_sex <- data_full_clean$Sex
-data_survey_scores <- data_survey$`Summary Scores`
-data_survey_scores <- data_survey_scores[,1:8]
-data_survey_scores$propcorrect <- full_propcorrect
-data_survey_scores$sex <- full_sex
+## Total brain volume (all participants)
+data_tiv <- read.csv(file = "TIV_comparison.csv")
+  names(data_tiv)[names(data_tiv) == "SubjectNum"] <- "sub_id"
+data_tiv$CaitTIV <- data_tiv$CaitTIV/1000
 
-post_cutoff <- c(which(data$post_cutoff %in% "TRUE")) # index of sub with posterior cutoffs
-data_cut <- data[-c(8, post_cutoff),] # n=13, 7 subfield volumes with no posterior cutoffs & removed sub-092
-  nrow(data_cut) == 13
+## Volume measures and slice counts from high-res T2 HC scans
+data_hrT2 <- read_excel("ASHS_volumes0323.xlsx", sheet = 1) 
+  hres_sub_id <- c(81:83, 85, 86, 88, 89, 92:96, 98:103, 106:113)
+  names(data_hrT2)[names(data_hrT2) == "Spatial Neuro ID"] <- "sub_id"
+raw_vol_full <- as_tibble(read.csv("subfield_vol/raw_vol_full.csv")) # FINAL volumes
+data_hrT2[,2:15] <- raw_vol_full[,3:16] # Replace data with FINAL volumes
+data_hrT2 <- merge(data_hrT2[,c(1:31,35:36)], data_nav_measures, by = "sub_id")
 
-  # Define new numeric sex variable
-  sex_to_numeric <- function(df) {
-    sex <- as.character((strsplit(gsub("[{}]","",df$`sex`), split = ",")))
-    sex[sex == "M"] <- 1
-    sex[sex == "F"] <- 0
-    df$sex <- as.numeric(sex) #25
-  }
+post_cutoff <- c(which(data_hrT2$post_cutoff == "TRUE")) # index of sub with posterior cutoffs
+data_cut <- data_hrT2[-c(post_cutoff),] # n=14, 7 subfield volumes with no posterior cutoffs
+nrow(data_cut) == 14
+
+## Volume measures and slice counts from high-res T2 HC scans (body only)
+data_HCbody <- read_excel("ASHS_volumes0323.xlsx", sheet = 2) 
+  names(data_HCbody)[names(data_HCbody) == "Spatial Neuro ID"] <- "sub_id"
+body_vol_full <- as_tibble(read.csv("subfield_vol/body_vol_full.csv"))
+data_HCbody[,2:13] <- body_vol_full[,3:14]
+data_HCbody <- merge(data_HCbody[,c(1:29,33:34)], data_nav_measures, by = "sub_id")
+
+post_cutoff_body <- post_cutoff[-c(5,6,9)] # posterior cutoffs for body same as full post-cutoff except 101, 102, 109
+data_HCbody_cut <- data_HCbody[-c(post_cutoff_body),] # n=17, 6 subfield volumes with no posterior cutoffs
+nrow(data_HCbody_cut) == 17
+
+## Volume measures and slice counts from low-res T2 whole-brain scans (high-res participants only)
+data_regT2 <- read_excel("ASHS_volumes0323.xlsx", sheet = 5)
+  names(data_regT2)[names(data_regT2) == "Spatial Neuro ID"] <- "sub_id"
+data_regT2 <- merge(data_regT2[,c(1:39,43:44)], data_nav_measures, by = "sub_id") 
+
+## Volume measures and slice counts from low-res T1 whole-brain scans (all participants)
+data_total_vol <- read_excel("ASHS_volumes0323.xlsx", sheet = 4) 
+  data_total_vol$sub_id <- as.integer(data_total_vol$sub_id)
+antpost_vol_full <- read.csv("antpost_vol/antpost_vol_full.csv")
+data_total_vol <- merge(data_total_vol[,c(1,4,9,11,14,19,21)], antpost_vol_full, by = "sub_id")
+data_total_vol <- data_total_vol %>% 
+  select("sub_id", "LHC_vol", "sLHC", "LaHC_vol", "sLaHC", "LpHC_vol", "sLpHC", 
+         "RHC_vol", "sRHC", "RaHC_vol", "sRaHC", "RpHC_vol", "sRpHC", "totalHC_vol", 
+         "aHC_vol", "pHC_vol", "Lpa_ratio", "Rpa_ratio", "meanpa_ratio")
+data_total_vol <- merge(data_total_vol, data_nav_measures, by = "sub_id")
+data_total_vol <- merge(data_total_vol, data_full_clean[,c(1,4:5)], by = "sub_id") 
+data_total_vol <- merge(data_total_vol, data_tiv[,c(2,8)], by = "sub_id")
+  names(data_total_vol)[names(data_total_vol) == "VaisTIV"] <- "tiv"
   
-  data$sex = sex_to_numeric(data) #25
+data_total_vol_ratio <- data_total_vol %>%
+  mutate(aHC_vol = LaHC_vol + RaHC_vol, pHC_vol = LpHC_vol + RpHC_vol,
+         Lpa_ratio = LpHC_vol/LaHC_vol, Rpa_ratio = RpHC_vol/RaHC_vol,
+         meanpa_ratio = (Lpa_ratio + Rpa_ratio)/2) # pa_ratio = postHC/antHC vol ratio
+  
+## Pen/paper and questionnaire measures (all participants)
+data_survey_scores <- read_excel_allsheets("RA_mlindiv_surveys.xlsx")
+  data_survey_scores <- data_survey_scores$`Summary Scores`[,1:8]
+  data_survey_scores <- merge(data_survey_scores, data_nav_measures, by = "sub_id", all = T) 
+  data_survey_scores <- merge(data_survey_scores, data_full_clean[,c(1,4)], by = "sub_id", all = T) 
+  data_survey_scores <- data_survey_scores %>% drop_na("propcorrect") 
+
+# Clean data
+## Define new numeric sex variable
+sex_to_numeric <- function(df) {
+  sex <- as.character((strsplit(gsub("[{}]","",df$`sex`), split = ",")))
+  sex[sex == "M"] <- 1
+  sex[sex == "F"] <- 0
+  df$sex <- as.numeric(sex)
+}
+  
+  data_hrT2$sex = sex_to_numeric(data_hrT2) #26
   data_cut$sex = sex_to_numeric(data_cut) #13
-  data_regT2$sex = sex_to_numeric(data_regT2) #12
-  
-data_tHC_25 <- data[-c(8),] %>% 
-  mutate(tLCA1 = LCA1/sLCA1, tLCA23 = LCA23/sLCA23, tLDG = LDG/sLDG, tLSUB = LSUB/sLSUB,
-         tRCA1 = RCA1/sRCA1, tRCA23 = RCA23/sRCA23, tRDG = RDG/sRDG, tRSUB = RSUB/sRSUB) %>%
-  dplyr::select("Spatial Neuro ID","sex","age","propcorrect","tm_pathefficiencies","tLCA1","tLCA23","tLDG",
-                "tLSUB","tRCA1","tRCA23","tRDG","tRSUB","tiv") # n=25, 4 HC subfield thickness
+  data_HCbody$sex = sex_to_numeric(data_HCbody)
+  data_total_vol$sex = sex_to_numeric(data_total_vol)
+  data_total_vol_ratio$sex = sex_to_numeric(data_total_vol_ratio)
+  data_regT2$sex = sex_to_numeric(data_regT2)
+  data_HCbody_cut$sex = sex_to_numeric(data_HCbody_cut)
+  data_survey_scores$sex = sex_to_numeric(data_survey_scores)
 
-data_tHC_26 <- data %>% 
-  mutate(tLCA1 = LCA1/sLCA1, tLCA23 = LCA23/sLCA23, tLDG = LDG/sLDG, tLSUB = LSUB/sLSUB,
-         tRCA1 = RCA1/sRCA1, tRCA23 = RCA23/sRCA23, tRDG = RDG/sRDG, tRSUB = RSUB/sRSUB) %>%
-  dplyr::select("Spatial Neuro ID","sex","age","propcorrect","tm_pathefficiencies","tLCA1","tLCA23","tLDG",
-                "tLSUB","tRCA1","tRCA23","tRDG","tRSUB","tiv") # n=25, 4 HC subfield thickness
+## Thickness
+data_tdata <- data_hrT2 %>% 
+  mutate(tLCA1 = LCA1/sLCA1/2, tLCA23 = LCA23/sLCA23/2, tLDG = LDG/sLDG/2, tLSUB = LSUB/sLSUB/2,
+         tLERC = LERC/sLERC/2, tLPRC = LPRC/sLPRC/2, tLPHC = LPHC/sLPHC/2,
+         tRCA1 = RCA1/sRCA1/2, tRCA23 = RCA23/sRCA23/2, tRDG = RDG/sRDG/2, tRSUB = RSUB/sRSUB/2,
+         tRERC = RERC/sRERC/2, tRPRC = RPRC/sRPRC/2, tRPHC = RPHC/sRPHC/2) %>% # 2mm
+  dplyr::select("sub_id","tLCA1","tLCA23","tLDG","tLSUB","tLERC","tLPRC","tLPHC","tRCA1","tRCA23","tRDG","tRSUB",
+                "tRERC","tRPRC","tRPHC","sex","age","propcorrect","patheff","patheff_acc_only","tiv") 
+  # n=26, 7 HC subfield
 
-data_tMTL <- data_cut %>% mutate(tLERC = LERC/sLERC, tLPRC = LPRC/sLPRC, tLPHC = LPHC/sLPHC, 
-                                 tRERC = RERC/sRERC, tRPRC = RPRC/sRPRC, tRPHC = RPHC/sRPHC) %>%
-  dplyr::select("Spatial Neuro ID","sex","age","propcorrect","tm_pathefficiencies","tLERC","tLPRC","tLPHC",
-                "tRERC","tRPRC","tRPHC","tiv") # n=13, 3 other MTL subfield thickness
+data_tHCbody_cut <- data_HCbody_cut %>% 
+  mutate(tLCA1 = LCA1/sLCA1/2, tLCA23 = LCA23/sLCA23/2, tLDG = LDG/sLDG/2, tLSUB = LSUB/sLSUB/2, 
+         tLPRC = LPRC/sLPRC/2, tLPHC = LPHC/sLPHC/2,
+         tRCA1 = RCA1/sRCA1/2, tRCA23 = RCA23/sRCA23/2, tRDG = RDG/sRDG/2, tRSUB = RSUB/sRSUB/2,
+         tRPRC = RPRC/sRPRC/2, tRPHC = RPHC/sRPHC/2) %>% # 2mm
+  dplyr::select("sub_id","tLCA1","tLCA23","tLDG","tLSUB","tLPRC","tLPHC","tRCA1","tRCA23","tRDG","tRSUB",
+                "tRPRC","tRPHC","sex","age","propcorrect","patheff","patheff_acc_only","tiv") # n=17, 6 body subfields
 
-data_regT2 <- data_regT2 %>% tidyr::drop_na(LaHC, LpHC, LERC, LPRC, LPHC, RaHC, RpHC, RERC, RPRC, RPHC) # n=12
+data_tregT2 <- data_regT2 %>%
+  mutate(tLaHC = LaHC/sLaHC/0.94, tLpHC = LpHC/sLpHC/0.94, 
+         tLERC = LERC/sLERC/0.94, tLPRC = LPRC/sLPRC/0.94, tLPHC = LPHC/sLPHC/0.94, 
+         tRaHC = RaHC/sRaHC/0.94, tRpHC = RpHC/sRpHC/0.94, 
+         tRERC = RERC/sRERC/0.94, tRPRC = RPRC/sRPRC/0.94, tRPHC = RPHC/sRPHC/0.94) %>% # 0.94mm
+  dplyr::select("sub_id","tLaHC","tLpHC","tLERC","tLPRC","tLPHC","tRaHC","tRpHC","tRERC","tRPRC","tRPHC",
+                "sex","age","propcorrect","patheff","patheff_acc_only","tiv") # n=26, 5 HC/MTL subfields
 
-data_tT2w <- data_regT2 %>%
-  mutate(tLaHC = LaHC/sLaHC, tLpHC = LpHC/sLpHC, tLERC = LERC/sLERC, tLPRC = LPRC/sLPRC, tLPHC = LPHC/sLPHC, 
-         tRaHC = RaHC/sRaHC, tRpHC = RpHC/sRpHC, tRERC = RERC/sRERC, tRPRC = RPRC/sRPRC, tRPHC = RPHC/sRPHC) %>%
-  dplyr::select("Spatial Neuro ID","sex","age","propcorrect","tm_pathefficiencies","tLaHC","tLpHC",
-                "tLERC","tLPRC","tLPHC","tRaHC","tRpHC","tRERC","tRPRC","tRPHC","tiv") # n=12, all 5 thickness
-
-data_tMTL_tT2w <- merge(data_tMTL, data_tT2w, all=TRUE) %>% 
-  dplyr::select("Spatial Neuro ID","sex","age","propcorrect","tLERC","tLPRC","tLPHC","tRERC","tRPRC","tRPHC","tiv")
-
-data_MTL_T2w <- merge(data_cut, data_regT2, all=TRUE) %>%
-  dplyr::select("Spatial Neuro ID","sex","age","propcorrect","LERC","LPRC","LPHC","RERC","RPRC","RPHC","tiv")
+data_total_thick <- data_total_vol %>% 
+  mutate(tLHC = LHC_vol/sLHC/0.94, tLaHC = LaHC_vol/sLaHC/0.94, tLpHC = LpHC_vol/sLpHC/0.94,
+         tRHC = RHC_vol/sRHC/0.94, tRaHC = RaHC_vol/sRaHC/0.94, tRpHC = RpHC_vol/sRpHC/0.94) %>% # 0.94mm
+  dplyr::select("sub_id","tLHC","tLaHC","tLpHC","tRHC","tRaHC","tRpHC",
+                "sex","age","propcorrect","patheff","patheff_acc_only","tiv") # n=99, L/R ant/post/total
 
 # Define relevant variables
 subfields_LR <- c("LCA1", "RCA1", "LCA23", "RCA23", "LDG", "RDG", "LSUB", "RSUB",
                   "LERC", "RERC", "LPRC", "RPRC", "LPHC", "RPHC")
-subfields_LR_apHC <- c("LaHC", "RaHC", "LpHC", "RpHC", "LERC", "RERC", "LPRC", "RPRC", "LPHC", "RPHC")
 
-# Compare TIV values between UCI and UCSB
-ucsb <- filter(data_UCSB, ...1 >= 81 & ...1 <= 113)
-ucsb <- ucsb[-c(4,9,10,16,23),]
-cor.test(data$tiv, ucsb$TIV) # r=.9863713, p<2.2e-16
+# Compare TIV values between UCI and UCSB (Vaisakh, Vini, Caitlin)
+t.test(data_tiv$VaisTIV, data_tiv$ViniTIV)
+t.test(data_tiv$VaisTIV, data_tiv$CaitTIV)
 
 # Color palettes + graph themes
 library(tidyr)
 # Colorblind-friendly palette (https://venngage.com/blog/color-blind-friendly-palette/)
 palette <- c("#a1caec", "#fdbc7a", "#cfcfcf", "#5e9ed0", "#ff800e", "#ababab", "#0469a6", "#c45400", "#898989",
              "#595959") # light blue/orange/gray, medium blue/orange/gray, dark blue/orange/gray, darker gray
+palette_sbfd <- c("#bd0000", "#49a12f", "#1306cf", "#4e819c", "#c9991e", "#921c94", "#438f8e", "#8e7ba8", "#74917b")
+                  # CA1, CA2/3, DG, SUB, ERC, PRC, PHC, aHC, pHC
 baseTheme <- theme_get() # store the default theme
 theme_set(theme_gray()) 
 theme_update1 <- theme_update(text = element_text(colour = rgb(12, 35, 75, maxColorValue = 255)), 
@@ -173,1404 +238,1028 @@ theme_update2 <- theme_update(text = element_text(colour = rgb(12, 35, 75, maxCo
                               plot.background = element_rect(fill = "transparent", color = "transparent"))
 theme2 <- theme_get()
 
-#### ------------------------- Section 1: Questionnaires + Proportion Correct (n~100) -------------------------- ####
-## Function that plots sex differences for correlation between X questionnaire and proportion correct
-ggplot_survey_MF <- function(data, score, propcorrect, title, xlab) {
-  ggplot(data = data, aes(x = score, y = propcorrect, # color by sex
-                          color = factor(sex, 
-                                         levels = c("F", "M"), 
-                                         labels = c("Female", "Male")))) + 
-    geom_point() + 
-    geom_smooth(method = "lm", aes(group = sex, fill = sex)) + 
-    scale_color_manual(values = c(palette[4], palette[5]), na.translate = F) +
-    scale_fill_manual(values = c(palette[4], palette[5]),
-                      name = "Biological Sex",
-                      labels = c("Female", "Male")) +
-    ggtitle(title) +
-    xlab(xlab) + ylab("Proportion Correct") + ylim(0, 1) +
-    labs(color = "Biological Sex") +
-    theme(legend.position = "bottom",
-          legend.direction = "horizontal",
-          legend.box = "horizontal")
-}
+#### ------------------------------------------------- Summary ------------------------------------------------- ####
+dim(data_total_vol)
+print(nrow(data_total_vol)-sum(data_total_vol$sex)) # number of females
+mean(data_total_vol$age)
+sd(data_total_vol$age)
+summary(data_total_vol$age)
 
-## Video Game
-data_VG <- data_survey_scores %>% 
-  dplyr::select("sub_id", "VG_hr", "VG_yr", "VG_score", "propcorrect", "sex")
+dim(data_hrT2)
+print(nrow(data_hrT2)-sum(data_hrT2$sex)) # number of females
+mean(data_hrT2$age)
+sd(data_hrT2$age)
+summary(data_hrT2$age)
 
-cor.test(data_VG[,2], data_VG[,5], na.action = na.omit)
-cor.test(data_VG[,3], data_VG[,5], na.action = na.omit) 
-cor.test(data_VG[,4], data_VG[,5], na.action = na.omit) 
+cor.test(data_total_vol$propcorrect, data_total_vol$patheff_acc_only)
 
-theme_set(theme1)
-ggplot(data = data_VG, aes(x = data_VG[,2], y = data_VG[,5])) + 
-  geom_point(color = palette[10]) + geom_smooth(method = "lm", se = FALSE, color = palette[10]) +
-  ggtitle("Maze Accuracy and Video Game Experience") +
-  xlab("Video Game Experience (hr/wk score)") + ylab("Proportion Correct") + ylim(0, 1)
-ggplot(data = data_VG, aes(x = data_VG[,3], y = data_VG[,5])) + 
-  geom_point(color = palette[10]) + geom_smooth(method = "lm", se = FALSE, color = palette[10]) +
-  ggtitle("Maze Accuracy and Video Game Experience") +
-  xlab("Video Game Experience (years)") + ylab("Proportion Correct") + ylim(0, 1)
-ggplot(data = data_VG, aes(x = data_VG[,4], y = data_VG[,5])) + 
-  geom_point(color = palette[10]) + geom_smooth(method = "lm", color = palette[10]) +
-  ggtitle("Maze Accuracy and Video Game Experience") +
-  xlab("Overall Video Game Experience Score") + ylab("Proportion Correct") + ylim(0, 1)
-
-ggplot_survey_MF(data_VG, data_VG[,4], data_VG[,5], 
-                 "Sex Differences in Maze Accuracy and Video Game Experience", "Overall Video Game Experience Score")
-
-data_VG_rm <- data_VG
-data_VG_rm <- data_VG_rm[-c(34),] # remove sub-034: age 25 and 25 yrs of playing video games
-
-cor.test(data_VG_rm[,3], data_VG_rm[,5], na.action = na.omit) # r=.5314872, p=5.005e-08, n=90 -> no difference
-
-## Road Map
-data_RM <- data_survey_scores %>% 
-  dplyr::select("sub_id", "RM_score", "propcorrect", "sex")
-
-cor.test(data_RM[,2], data_RM[,3], na.action = na.omit) 
-
-ggplot(data = data_RM, aes(x = data_RM[,2], y = data_RM[,3])) + 
-  geom_point(color = palette[10]) + geom_smooth(method = "lm", color = palette[10]) +
-  ggtitle("Maze Accuracy and Road Map Task") +
-  xlab("Total Correct Turns in Road Map Task") + ylab("Proportion Correct") + ylim(0, 1)
-
-ggplot_survey_MF(data_RM, data_RM[,2], data_RM[,3], 
-                 "Sex Differences in Maze Accuracy and Road Map Task", "Total Correct Turns in Road Map Task")
-
-## SBSOD
-data_SBSOD <- data_survey_scores %>% 
-  dplyr::select("sub_id", "SBSOD_score", "propcorrect", "sex")
-
-cor.test(data_SBSOD[,2], data_SBSOD[,3], na.action = na.omit) 
-
-ggplot(data = data_SBSOD, aes(x = data_SBSOD[,2], y = data_SBSOD[,3])) + 
-  geom_point(color = palette[10]) + geom_smooth(method = "lm", color = palette[10]) +
-  ggtitle("Maze Accuracy and SB Sense of Direction Scale (SBSOD)") +
-  xlab("SBSOD Score") + ylab("Proportion Correct") + ylim(0, 1)
-
-ggplot_survey_MF(data_SBSOD, data_SBSOD[,2], data_SBSOD[,3], 
-                 "Sex Differences in Maze Accuracy and SBSOD", "SBSOD Score")
-
-## Handedness
-data_hand <- data_survey_scores %>% 
-  dplyr::select("sub_id", "Hand_score", "propcorrect", "sex")
-
-cor.test(data_hand[,2], data_hand[,3], na.action = na.omit) 
-
-## Spatial Orientation
-data_SOT <- data_survey_scores %>% 
-  dplyr::select("sub_id", "SOT_score", "propcorrect", "sex")
-
-cor.test(data_SOT[,2], data_SOT[,3], na.action = na.omit) 
-
-ggplot(data = data_SOT, aes(x = data_SOT[,2], y = data_SOT[,3])) +
-  geom_point(color = palette[10]) + geom_smooth(method = "lm", color = palette[10]) +
-  ggtitle("Maze Accuracy and Spatial Orientation Task (SOT)") +
-  xlab("SOT Angular Error (degrees)") + ylab("Proportion Correct") + ylim(0, 1)
-
-ggplot_survey_MF(data_SOT, data_SOT[,2], data_SOT[,3], 
-                 "Sex Differences in Maze Accuracy and SOT", "SOT Angular Error (degrees)")
-
-#### ------------------------- Section 2: Questionnaires Summary Demographics (n~100) -------------------------- ####
-## Function that plots sex differences for correlation between questionnaires and proportion correct
-ggplot_survey_MF_bar <- function(data, sex, score, title, ylab) {
-  data %>%
-    ggplot(aes(x = sex, y = score, col = sex, fill = sex, group = sex)) + # color by sex
-    geom_violin(show.legend = FALSE) + # geom_boxplot
-    scale_x_discrete(na.translate = FALSE) +
-    scale_color_manual(values = c(palette[4], palette[5]), na.translate = F) +
-    scale_fill_manual(values = c(palette[4], palette[5])) +
-    ggtitle(title) +
-    xlab("Biological Sex") + ylab(ylab) +
-    labs(color = "Biological Sex") +
-    theme(legend.position = "bottom",
-          legend.direction = "horizontal",
-          legend.box = "horizontal")
-}
-
-## Video Game ###### NEED TO FIGUREE OUTTT
-summary(data_VG[,2])
-ggplot_survey_MF_bar(data_VG, sex, data_VG[,2], 
-                     "Sex Differences in Hours/Week Playing Video Games", "Video Game Experience (hr/wk score)")
-ggplot_survey_MF_bar(data_VG, sex, data_VG[,3], 
-                     "Sex Differences in Years Playing Video Games", "Video Game Experience (years)")
-ggplot_survey_MF_bar(data_VG, sex, data_VG[,4], 
-                     "Sex Differences in Video Game Experience", "Overall Video Game Experience Score")
-
-## Road Map
-ggplot_survey_MF_bar(data_RM, sex, data_RM[,2], 
-                     "Sex Differences in Road Map Task", "Total Correct Turns in Road Map Task")
-
-## SBSOD
-ggplot_survey_MF_bar(data_SBSOD, sex, data_SBSOD[,2], 
-                     "Sex Differences in Santa Barbara Sense of Direction Scale (SBSOD)", "SBSOD Score")
-
-## Hand
-ggplot_survey_MF_bar(data_hand, sex, data_hand[,2], 
-                     "Sex Differences in Handedness", "Handedness Score")
-
-## SOT
-ggplot_survey_MF_bar(data_SOT, sex, data_SOT[,2], 
-                     "Sex Differences in Spatial Orientation Task (SOT)", "SOT Angular Error (degrees)")
-
-#### ---------------------- Section 3: Total Volumes (summed) + Proportion Correct (n=25) ---------------------- ####
+#### -------------------------- Section 1A: Total Volumes + Propcorr or Patheff (n=99) ------------------------- ####
 # Testing null hypotheses
-# Define custom data
-data_total_vol <- merge(data_cut, data_regT2, all=TRUE) %>% 
-  dplyr::select("Spatial Neuro ID", "LaHC", "RaHC", "LpHC", "RpHC", "LCA1", "RCA1", "LCA23", "RCA23", "LDG", "RDG",  
-                "LSUB", "RSUB", "LERC", "RERC", "LPHC", "RPHC", "LPRC", "RPRC", "sex", "age", "propcorrect", "tiv")
-data_total_vol[is.na(data_total_vol)] <- 0
-data_total_vol <- data_total_vol %>%
-  mutate(HC = LaHC + RaHC + LpHC + RpHC + LCA1 + RCA1 + LCA23 + RCA23 + LDG + RDG + LSUB + RSUB, 
-         MTL = HC + LERC + RERC + LPRC + RPRC + LPHC + RPHC) %>%
-  mutate(tiv_mm3 = tiv*1000000) %>%
-  mutate(HC_tiv = HC/tiv_mm3, MTL_tiv = MTL/tiv_mm3) %>% 
-  dplyr::select("Spatial Neuro ID", "sex", "age", "propcorrect", "tiv", "HC", "MTL", "HC_tiv", "MTL_tiv")
+# Check for outliers
+which(abs(scale(data_total_vol$LHC_vol)) > 3)
+which(abs(scale(data_total_vol$RHC_vol)) > 3)
+which(abs(scale(data_total_vol$totalHC_vol)) > 3)
 
-# Partial correlation between total (HC and MTL) volumes and propcorrect (n=25)
-pcor.test(data_total_vol$propcorrect, data_total_vol$HC, 
-          c(data_total_vol$sex, data_total_vol$age, data_total_vol$tiv), method = "pearson") 
-pcor.test(data_total_vol$propcorrect, data_total_vol$MTL, 
-          c(data_total_vol$sex, data_total_vol$age, data_total_vol$tiv), method = "pearson")
+dim(data_total_vol)
 
-ggplot(data = data_total_vol, aes(y = propcorrect, x = HC)) + 
-  geom_point(color = palette[4]) + geom_smooth(method = "lm", color = palette[4]) +
-  ggtitle("Maze Accuracy and Total HC Volume") + xlab("Total Hippocampal (HC) Volume (mm^3)") +
+## Function that outputs correlation table for all 3 regions
+## Inputs: (1) list of correlation (r) values and p-values
+## Output: a correlation matrix (mat)/ table for the 3 subfields' r and p-values
+subfields_total <- c("LHC_vol", "RHC_vol", "totalHC_vol")
+corr_mat_total <- function(r_list) {
+  corr_mat_total <- matrix(unlist(t(r_list)), byrow=T, 3, 2)
+  colnames(corr_mat_total) <- c("r", "p-value")
+  rownames(corr_mat_total) <- c("LHC", "RHC", "totalHC")
+  return(corr_mat_total)
+}
+
+# Partial correlation tables between L/R/total HC volumes and propcorrect, patheff, patheff_acc_only (n=99)
+nav_dv <- c("propcorrect", "patheff", "patheff_acc_only")
+for (dv in nav_dv) {
+  r <- NULL;
+  
+  for (subfd_name in subfields_total) { 
+    subfield <- paste(subfd_name, "_pcor", sep = "")
+    PC_subfield_pcor <- pcor.test(pull(data_total_vol[subfd_name]), data_total_vol[dv], 
+                                  c(data_total_vol$sex, data_total_vol$age, data_total_vol$tiv), method = "pearson")
+    assign(subfd_name, PC_subfield_pcor)
+    r <- rbind(r, round(PC_subfield_pcor$estimate, digits = 3), round(PC_subfield_pcor$p.value, digits = 5))
+    # print(paste(i, "estimate is:", round(PC_subfield_pcor$estimate, digits = 2), 
+    #             "and p-value is:", round(PC_subfield_pcor$p.value, digits = 3))) 
+  } # ex. LCA1_pcor
+  
+  print(dv)
+  print(corr_mat_total(r))
+}
+
+ggplot(data = data_total_vol, aes(y = propcorrect, x = LHC_vol)) +
+  geom_point(color = palette[9]) + geom_smooth(method = "lm", color = palette[9]) +
+  ggtitle("Left HC Volume") + xlab("Left Hippocampal (HC) Volume (mm^3)") +
   ylab("Proportion Correct") + ylim(0, 1)
-ggplot(data = data_total_vol, aes(y = propcorrect, x = MTL)) + 
-  geom_point(color = palette[7]) + geom_smooth(method = "lm", color = palette[7]) +
-  ggtitle("Maze Accuracy and Total MTL Volume") + xlab("Total Medial Temporal Lobe (MTL) Volume (mm^3)") +
+ggplot(data = data_total_vol, aes(y = propcorrect, x = RHC_vol)) +
+  geom_point(color = palette[9]) + geom_smooth(method = "lm", color = palette[9]) +
+  ggtitle("Right HC Volume") + xlab("Right Hippocampal (HC) Volume (mm^3)") +
+  ylab("Proportion Correct") + ylim(0, 1)
+ggplot(data = data_total_vol, aes(y = propcorrect, x = totalHC_vol)) +
+  geom_point(color = palette[9]) + geom_smooth(method = "lm", color = palette[9]) +
+  ggtitle("Total HC Volume") + xlab("Total Hippocampal (HC) Volume (mm^3)") +
   ylab("Proportion Correct") + ylim(0, 1)
 
-# Partial correlation between ratio of total volumes and propcorrect (n=25)
-pcor.test(data_total_vol$propcorrect, data_total_vol$HC_tiv, 
-          c(data_total_vol$sex, data_total_vol$age), method = "pearson") 
-pcor.test(data_total_vol$propcorrect, data_total_vol$MTL_tiv, 
-          c(data_total_vol$sex, data_total_vol$age), method = "pearson")
+# Filter df to get data to be highlighted
+highlight_df <- data_total_vol[c(28,57,68,83),]
+print(highlight_df$sub_id) # FreeSurfer HC edit: 33, 79, 95; Echo (instead of T1) scan: 67
 
-ggplot(data = data_total_vol, aes(y = propcorrect, x = HC_tiv)) +
-  geom_point(color = palette[4]) + geom_smooth(method = "lm", color = palette[4])+
-  ggtitle("Maze Accuracy and Ratio between HC Volumes and TIV") +
-  xlab("Ratio between HC Volume and Total Hippocampal Volume (TIV)") + ylab("Proportion Correct") + ylim(0, 1)
-ggplot(data = data_total_vol, aes(y = propcorrect, x = MTL_tiv)) +
-  geom_point(color = palette[7]) + geom_smooth(method = "lm", color = palette[7])+
-  ggtitle("Maze Accuracy and Ratio between MTL Volumes and TIV") +
-  xlab("Ratio between MTL Volume and Total Hippocampal Volume (TIV)") + ylab("Proportion Correct") + ylim(0, 1)
+data_total_vol %>% 
+  ggplot(aes(x = LHC_vol, y = propcorrect)) + 
+  geom_point(color = palette[9]) + geom_smooth(method = "lm", color = palette[9]) +
+  ggtitle("Left HC Volume") + xlab("Left Hippocampal (HC) Volume (mm^3)") +
+  ylab("Proportion Correct") + ylim(0, 1) +
+  geom_point(data = highlight_df, aes(x = LHC_vol, y = propcorrect), 
+             color = 'blue')
+data_total_vol %>% 
+  ggplot(aes(x = RHC_vol, y = propcorrect)) + 
+  geom_point(color = palette[9]) + geom_smooth(method = "lm", color = palette[9]) +
+  ggtitle("Right HC Volume") + xlab("Right Hippocampal (HC) Volume (mm^3)") +
+  ylab("Proportion Correct") + ylim(0, 1) +
+  geom_point(data = highlight_df, aes(x = RHC_vol, y = propcorrect), 
+             color = 'blue')
+data_total_vol %>% 
+  ggplot(aes(x = totalHC_vol, y = propcorrect)) + 
+  geom_point(color = palette[9]) + geom_smooth(method = "lm", color = palette[9]) +
+  ggtitle("Total HC Volume") + xlab("Total Hippocampal (HC) Volume (mm^3)") +
+  ylab("Proportion Correct") + ylim(0, 1) +
+  geom_point(data = highlight_df, aes(x = totalHC_vol, y = propcorrect), 
+             color = 'blue')
 
-#### --------------- Section 4: *No cut-off* HR-T2 Subfield Volumes + Proportion Correct (n=13) ---------------- ####
-# Create function: correlation table for all 7 subfields
+# MULTIPLE LINEAR REGRESSION - CANNOT DO PARTIAL CORRECTION WITH SEX?
+## Pearson correlation: Assumptions check
+  # Homoscedasticity = constant variance
+  model <- lm(propcorrect ~ LHC_vol, data = data_total_vol) # Replace the X value with diff HC subdivisions
+  resid <- resid(model)
+  plot(fitted(model), resid)
+  # Linearity
+  plot(data_total_vol$LHC_vol, data_total_vol$propcorrect) # Replace the X value with diff HC subdivisions
+  # Good to use pearson's correlation :)
+  
+## Pearson's correlation tables between L/R/total HC volumes and propcorrect, patheff, patheff_acc_only (n=99)
+nav_dv <- c("propcorrect", "patheff", "patheff_acc_only")
+for (dv in nav_dv) {
+  r <- NULL;
+    
+  for (subfd_name in subfields_total) { 
+    subfield <- paste(subfd_name, "_pcor", sep = "")
+    PC_subfield_cor <- cor.test(pull(data_total_vol[subfd_name]), data_total_vol[,dv], method = "pearson")
+    assign(subfd_name, PC_subfield_cor)
+    r <- rbind(r, round(PC_subfield_cor$estimate, digits = 3), round(PC_subfield_cor$p.value, digits = 5))
+    # print(paste(i, "estimate is:", round(PC_subfield_cor$estimate, digits = 2), 
+    #             "and p-value is:", round(PC_subfield_cor$p.value, digits = 3))) 
+  } # ex. LCA1_cor
+    
+  print(dv)
+  print(corr_mat_total(r))
+}
+
+## Multiple linear regression
+model_LHC_propcorr <- lm(propcorrect ~ LHC_vol + sex + age + tiv, data = data_total_vol)
+model_LHC_patheff <- lm(patheff ~ LHC_vol + sex + age + tiv, data = data_total_vol)
+model_LHC_patheffacc <- lm(patheff_acc_only ~ LHC_vol + sex + age + tiv, data = data_total_vol)
+model_RHC_propcorr <- lm(propcorrect ~ RHC_vol + sex + age + tiv, data = data_total_vol)
+model_RHC_patheff <- lm(patheff ~ RHC_vol + sex + age + tiv, data = data_total_vol)
+model_RHC_patheffacc <- lm(patheff_acc_only ~ RHC_vol + sex + age + tiv, data = data_total_vol)
+model_totalHC_propcorr <- lm(propcorrect ~ totalHC_vol + sex + age + tiv, data = data_total_vol)
+model_totalHC_patheff <- lm(patheff ~ totalHC_vol + sex + age + tiv, data = data_total_vol)
+model_totalHC_patheffacc <- lm(patheff_acc_only ~ totalHC_vol + sex + age + tiv, data = data_total_vol)
+
+  # Assumptions check:
+  # Linearity
+  plot(data_total_vol$age, data_total_vol$propcorrect)
+  # No multicollinearity
+  vif(model_LHC_propcorr) # Replace the value with diff models. outcome values should be less than 5
+  # Independent observations
+  # Homoscedasticity = constant variance
+  resid <- resid(model_LHC_propcorr) # Replace the value with diff models
+  plot(fitted(model_LHC_propcorr), resid) 
+  # Multivariate normality
+  
+summary(model_LHC_propcorr)
+summary(model_LHC_patheff)
+summary(model_LHC_patheffacc)
+summary(model_RHC_propcorr) # *the only ones steve looked at*
+summary(model_RHC_patheff) # *the only ones steve looked at*
+summary(model_RHC_patheffacc) # *the only ones steve looked at*
+summary(model_totalHC_propcorr)
+summary(model_totalHC_patheff)
+summary(model_totalHC_patheffacc)
+  
+  model_LaHC <- lm(propcorrect ~ LaHC_vol + sex + age + tiv, data = data_total_vol)
+  model_LpHC <- lm(propcorrect ~ LpHC_vol + sex + age + tiv, data = data_total_vol)
+  model_RaHC <- lm(propcorrect ~ RaHC_vol + sex + age + tiv, data = data_total_vol)
+  model_RpHC <- lm(propcorrect ~ RpHC_vol + sex + age + tiv, data = data_total_vol)
+  summary(model_LaHC)
+  summary(model_LpHC)
+  summary(model_RaHC)
+  summary(model_RpHC) # *the only one steve looked at*
+
+# # Remove outliers
+# data_total_vol_rm <- data_total_vol[-c(28, 82),]
+# dim(data_total_vol_rm)
+# 
+# # Outliers removed: Partial correlation between left, right, total HC volumes and propcorrect (n=96)
+# pcor.test(data_total_vol_rm$propcorrect, data_total_vol_rm$LHC_vol,
+#           c(data_total_vol_rm$sex, data_total_vol_rm$age, data_total_vol_rm$tiv), method = "pearson")
+# pcor.test(data_total_vol_rm$propcorrect, data_total_vol_rm$RHC_vol,
+#           c(data_total_vol_rm$sex, data_total_vol_rm$age, data_total_vol_rm$tiv), method = "pearson")
+# pcor.test(data_total_vol_rm$propcorrect, data_total_vol_rm$totalHC_vol,
+#           c(data_total_vol_rm$sex, data_total_vol_rm$age, data_total_vol_rm$tiv), method = "pearson")
+# 
+# ggplot(data = data_total_vol_rm, aes(y = propcorrect, x = LHC_vol)) +
+#   geom_point(color = palette[9]) + geom_smooth(method = "lm", color = palette[9]) +
+#   ggtitle("Wayfinding Success and Left HC Volume") + xlab("Left Hippocampal (HC) Volume (mm^3)") +
+#   ylab("Proportion Correct") + ylim(0, 1)
+# ggplot(data = data_total_vol_rm, aes(y = propcorrect, x = RHC_vol)) +
+#   geom_point(color = palette[9]) + geom_smooth(method = "lm", color = palette[9]) +
+#   ggtitle("Wayfinding Success and Right HC Volume") + xlab("Right Hippocampal (HC) Volume (mm^3)") +
+#   ylab("Proportion Correct") + ylim(0, 1)
+# ggplot(data = data_total_vol_rm, aes(y = propcorrect, x = totalHC_vol)) +
+#   geom_point(color = palette[9]) + geom_smooth(method = "lm", color = palette[9]) +
+#   ggtitle("Wayfinding Success and Total HC Volume") + xlab("Total Hippocampal (HC) Volume (mm^3)") +
+#   ylab("Proportion Correct") + ylim(0, 1)
+
+#### ------------------------ Section 1B: Total Thickness + Propcorr or Patheff (n=98) ------------------------- ####
+# Testing null hypotheses
+# Check for outliers
+which(abs(scale(data_total_thick$tLHC)) > 3)
+which(abs(scale(data_total_thick$tRHC)) > 3) # 20
+
+dim(data_total_thick)
+
+# Remove outliers
+data_total_thick_rm <- data_total_thick[-c(20),] # Participant 24
+dim(data_total_thick_rm)
+
+## Function that outputs correlation table for all 2 regions
+## Inputs: (1) list of correlation (r) values and p-values
+## Output: a correlation matrix (mat)/ table for the 2 subfields' r and p-values
+subfields_total <- c("tLHC", "tRHC")
+corr_mat_total <- function(r_list) {
+  corr_mat_total <- matrix(unlist(t(r_list)), byrow=T, 2, 2)
+  colnames(corr_mat_total) <- c("r", "p-value")
+  rownames(corr_mat_total) <- c("tLHC", "tRHC")
+  return(corr_mat_total)
+}
+
+# Outliers removed: Partial correlation tables between L/R HC thickness and propcorrect, patheff, patheff_acc_only (n=98)
+nav_dv <- c("propcorrect", "patheff", "patheff_acc_only")
+for (dv in nav_dv) {
+  r <- NULL;
+  
+  for (subfd_name in subfields_total) { 
+    subfield <- paste(subfd_name, "_pcor", sep = "")
+    PC_subfield_pcor <- pcor.test(pull(data_total_thick_rm[subfd_name]), data_total_thick_rm[dv], 
+                                  c(data_total_thick_rm$sex, data_total_thick_rm$age, data_total_thick_rm$tiv), method = "pearson")
+    assign(subfd_name, PC_subfield_pcor)
+    r <- rbind(r, round(PC_subfield_pcor$estimate, digits = 3), round(PC_subfield_pcor$p.value, digits = 5))
+    # print(paste(i, "estimate is:", round(PC_subfield_pcor$estimate, digits = 2), 
+    #             "and p-value is:", round(PC_subfield_pcor$p.value, digits = 3))) 
+  } # ex. LCA1_pcor
+  
+  print(dv)
+  print(corr_mat_total(r))
+}
+
+# ggplot(data = data_total_thick_rm, aes(y = propcorrect, x = tLHC)) + 
+#   geom_point(color = palette[6]) + geom_smooth(method = "lm", color = palette[6]) +
+#   ggtitle("Wayfinding Success and Left HC Thickness") + xlab("Normalized Thickness Ratio") +
+#   ylab("Proportion Correct") + ylim(0, 1)
+# ggplot(data = data_total_thick_rm, aes(y = propcorrect, x = tRHC)) + 
+#   geom_point(color = palette[6]) + geom_smooth(method = "lm", color = palette[6]) +
+#   ggtitle("Wayfinding Success and Right HC Thickness") + xlab("Normalized Thickness Ratio") +
+#   ylab("Proportion Correct") + ylim(0, 1)
+
+# MULTIPLE LINEAR REGRESSION - CANNOT DO PARTIAL CORRECTION WITH SEX?
+## Pearson correlation: Assumptions check
+  # Homoscedasticity = constant variance
+  model <- lm(propcorrect ~ tLHC, data = data_total_thick_rm) # Replace the X and Y with diff value
+  resid <- resid(model)
+  plot(fitted(model), resid)
+  # Linearity
+  plot(data_total_thick_rm$tLHC, data_total_thick_rm$propcorrect) # Replace the X value with diff HC subdivisions
+  # Good to use pearson's correlation :)
+
+## Outliers removed: Pearson's correlation tables between L/R HC thickness and propcorrect, patheff, patheff_acc_only (n=98)
+nav_dv <- c("propcorrect", "patheff", "patheff_acc_only")
+for (dv in nav_dv) {
+  r <- NULL;
+  
+  for (subfd_name in subfields_total) { 
+    subfield <- paste(subfd_name, "_pcor", sep = "")
+    PC_subfield_cor <- cor.test(pull(data_total_thick_rm[subfd_name]), data_total_thick_rm[,dv], method = "pearson")
+    assign(subfd_name, PC_subfield_cor)
+    r <- rbind(r, round(PC_subfield_cor$estimate, digits = 3), round(PC_subfield_cor$p.value, digits = 5))
+    # print(paste(i, "estimate is:", round(PC_subfield_cor$estimate, digits = 2), 
+    #             "and p-value is:", round(PC_subfield_cor$p.value, digits = 3))) 
+  } # ex. LCA1_cor
+  
+  print(dv)
+  print(corr_mat_total(r))
+}
+
+## Multiple linear regression
+model_tLHC_propcorr <- lm(propcorrect ~ tLHC + sex + age + tiv, data = data_total_thick_rm)
+model_tLHC_patheff <- lm(patheff ~ tLHC + sex + age + tiv, data = data_total_thick_rm)
+model_tLHC_patheffacc <- lm(patheff_acc_only ~ tLHC + sex + age + tiv, data = data_total_thick_rm)
+model_tRHC_propcorr <- lm(propcorrect ~ tRHC + sex + age + tiv, data = data_total_thick_rm)
+model_tRHC_patheff <- lm(patheff ~ tRHC + sex + age + tiv, data = data_total_thick_rm)
+model_tRHC_patheffacc <- lm(patheff_acc_only ~ tRHC + sex + age + tiv, data = data_total_thick_rm)
+
+  # Assumptions check:
+  # Linearity
+  plot(data_total_thick_rm$age, data_total_thick_rm$propcorrect)
+  # No multicollinearity
+  vif(model_tLHC_propcorr) # Replace the value with diff models. outcome values should be less than 5
+  # Independent observations
+  # Homoscedasticity = constant variance
+  resid <- resid(model_tLHC_propcorr) # Replace the value with diff models
+  plot(fitted(model_tLHC_propcorr), resid) 
+  # Multivariate normality
+
+summary(model_tLHC_propcorr)
+summary(model_tLHC_patheff)
+summary(model_tLHC_patheffacc)
+summary(model_tRHC_propcorr) # *the only ones steve looked at*
+summary(model_tRHC_patheff) # *the only ones steve looked at*
+summary(model_tRHC_patheffacc) # *the only ones steve looked at*
+
+#### ------------------- Section 2A: Bilateral Ant/Post Volumes + Propcorr or Patheff (n~99) ------------------- ####
+# Check for outliers
+which(abs(scale(data_total_vol$LaHC_vol)) > 3)
+which(abs(scale(data_total_vol$LpHC_vol)) > 3)
+which(abs(scale(data_total_vol$RaHC_vol)) > 3)
+which(abs(scale(data_total_vol$RpHC_vol)) > 3)
+
+dim(data_total_vol)
+
+## Function that outputs correlation table for all 4 subregions
+## Inputs: (1) list of correlation (r) values and p-values
+## Output: a correlation matrix (mat)/ table for the 4 subregions' r and p-values
+subfields_antpost <- c("LaHC_vol", "LpHC_vol", "RaHC_vol", "RpHC_vol")
+corr_mat_antpost <- function(r_list) {
+  corr_mat_antpost <- matrix(unlist(t(r_list)), byrow=T, 4, 2)
+  colnames(corr_mat_antpost) <- c("r", "p-value")
+  rownames(corr_mat_antpost) <- c("LaHC", "LpHC", "RaHC", "RpHC")
+  return(corr_mat_antpost)
+}
+
+# Partial correlation tables between L/R ant/post volumes and propcorrect, patheff, patheff_acc_only (n=99)
+nav_dv <- c("propcorrect", "patheff", "patheff_acc_only")
+for (dv in nav_dv) {
+  r <- NULL;
+  
+  for (subfd_name in subfields_antpost) { 
+    subfield <- paste(subfd_name, "_pcor", sep = "")
+    PC_subfield_pcor <- pcor.test(pull(data_total_vol[subfd_name]), data_total_vol[dv], 
+                                  c(data_total_vol$sex, data_total_vol$age, data_total_vol$tiv), method = "pearson")
+    assign(subfd_name, PC_subfield_pcor)
+    r <- rbind(r, round(PC_subfield_pcor$estimate, digits = 3), round(PC_subfield_pcor$p.value, digits = 5))
+    # print(paste(i, "estimate is:", round(PC_subfield_pcor$estimate, digits = 2), 
+    #             "and p-value is:", round(PC_subfield_pcor$p.value, digits = 3))) 
+  } # ex. LCA1_pcor
+  
+  print(dv)
+  print(corr_mat_antpost(r))
+}
+
+ggplot(data = data_total_vol, aes(y = propcorrect, x = LaHC_vol)) +
+  geom_point(color = palette_sbfd[8]) + geom_smooth(method = "lm", color = palette_sbfd[8]) +
+  ggtitle("Left aHC Volume") + xlab("Left Anterior HC Volume (mm^3)") +
+  ylab("Proportion Correct") + ylim(0, 1)
+ggplot(data = data_total_vol, aes(y = propcorrect, x = RaHC_vol)) +
+  geom_point(color = palette_sbfd[8]) + geom_smooth(method = "lm", color = palette_sbfd[8]) +
+  ggtitle("Right aHC Volume") + xlab("Right Anterior HC Volume (mm^3)") +
+  ylab("Proportion Correct") + ylim(0, 1)
+
+# MULTIPLE LINEAR REGRESSION - CANNOT DO PARTIAL CORRECTION WITH SEX?
+## Pearson correlation: Assumptions check
+  # Homoscedasticity = constant variance
+  model <- lm(propcorrect ~ LHC_vol, data = data_total_vol) # Replace the X value with diff HC subdivisions
+  resid <- resid(model)
+  plot(fitted(model), resid)
+  # Linearity
+  plot(data_total_vol$LaHC_vol, data_total_vol$propcorrect) # Replace the X value with diff HC subdivisions
+  # Good to use pearson's correlation :)
+
+## Pearson's correlation tables between L/R ant/post volumes and propcorrect, patheff, patheff_acc_only (n=99)
+nav_dv <- c("propcorrect", "patheff", "patheff_acc_only")
+for (dv in nav_dv) {
+  r <- NULL;
+  
+  for (subfd_name in subfields_antpost) { 
+    subfield <- paste(subfd_name, "_pcor", sep = "")
+    PC_subfield_cor <- cor.test(pull(data_total_vol[subfd_name]), data_total_vol[,dv], method = "pearson")
+    assign(subfd_name, PC_subfield_cor)
+    r <- rbind(r, round(PC_subfield_cor$estimate, digits = 3), round(PC_subfield_cor$p.value, digits = 5))
+    # print(paste(i, "estimate is:", round(PC_subfield_cor$estimate, digits = 2), 
+    #             "and p-value is:", round(PC_subfield_cor$p.value, digits = 3))) 
+  } # ex. LCA1_cor
+  
+  print(dv)
+  print(corr_mat_antpost(r))
+}
+
+## Multiple linear regression
+model_LaHC_propcorr <- lm(propcorrect ~ LaHC_vol + sex + age + tiv, data = data_total_vol)
+model_LaHC_patheff <- lm(patheff ~ LaHC_vol + sex + age + tiv, data = data_total_vol)
+model_LaHC_patheffacc <- lm(patheff_acc_only ~ LaHC_vol + sex + age + tiv, data = data_total_vol)
+model_LpHC_propcorr <- lm(propcorrect ~ LpHC_vol + sex + age + tiv, data = data_total_vol)
+model_LpHC_patheff <- lm(patheff ~ LpHC_vol + sex + age + tiv, data = data_total_vol)
+model_LpHC_patheffacc <- lm(patheff_acc_only ~ LpHC_vol + sex + age + tiv, data = data_total_vol)
+model_RaHC_propcorr <- lm(propcorrect ~ RaHC_vol + sex + age + tiv, data = data_total_vol)
+model_RaHC_patheff <- lm(patheff ~ RaHC_vol + sex + age + tiv, data = data_total_vol)
+model_RaHC_patheffacc <- lm(patheff_acc_only ~ RaHC_vol + sex + age + tiv, data = data_total_vol)
+model_RpHC_propcorr <- lm(propcorrect ~ RpHC_vol + sex + age + tiv, data = data_total_vol)
+model_RpHC_patheff <- lm(patheff ~ RpHC_vol + sex + age + tiv, data = data_total_vol)
+model_RpHC_patheffacc <- lm(patheff_acc_only ~ RpHC_vol + sex + age + tiv, data = data_total_vol)
+
+  # Assumptions check:
+  # Linearity
+  plot(data_total_vol$age, data_total_vol$propcorrect)
+  # No multicollinearity
+  vif(model_LaHC_propcorr) # Replace the value with diff models. outcome values should be less than 5
+  # Independent observations
+  # Homoscedasticity = constant variance
+  resid <- resid(model_LaHC_propcorr) # Replace the value with diff models
+  plot(fitted(model_LaHC_propcorr), resid) 
+  # Multivariate normality
+
+summary(model_LaHC_propcorr)
+summary(model_LaHC_patheff)
+summary(model_LaHC_patheffacc)
+summary(model_LpHC_propcorr)
+summary(model_LpHC_patheff)
+summary(model_LpHC_patheffacc)
+summary(model_RaHC_propcorr)
+summary(model_RaHC_patheff) 
+summary(model_RaHC_patheffacc) 
+summary(model_RpHC_propcorr) # *the only ones steve looked at*
+summary(model_RpHC_patheff) # *the only ones steve looked at*
+summary(model_RpHC_patheffacc) # *the only ones steve looked at*
+
+#### ------------------ Section 2B: Bilateral Ant/Post Thickness + Propcorr or Patheff (n~98) ------------------ ####
+# Check for outliers
+which(abs(scale(data_total_thick$tLaHC)) > 3) # 20
+which(abs(scale(data_total_thick$tLpHC)) > 3) 
+which(abs(scale(data_total_thick$tRaHC)) > 3) # 20
+which(abs(scale(data_total_thick$tRpHC)) > 3)
+
+# Remove outliers
+data_total_thick_rm <- data_total_thick[-c(20),]
+dim(data_total_thick_rm)
+
+## Function that outputs correlation table for all 4 subregions
+## Inputs: (1) list of correlation (r) values and p-values
+## Output: a correlation matrix (mat)/ table for the 4 subregions' r and p-values
+subfields_antpost <- c("tLaHC", "tLpHC", "tRaHC", "tRpHC")
+corr_mat_antpost <- function(r_list) {
+  corr_mat_antpost <- matrix(unlist(t(r_list)), byrow=T, 4, 2)
+  colnames(corr_mat_antpost) <- c("r", "p-value")
+  rownames(corr_mat_antpost) <- subfields_antpost
+  return(corr_mat_antpost)
+}
+
+# Partial correlation tables between L/R ant/post thickness and propcorrect, patheff, patheff_acc_only (n=98)
+nav_dv <- c("propcorrect", "patheff", "patheff_acc_only")
+for (dv in nav_dv) {
+  r <- NULL;
+  
+  for (subfd_name in subfields_antpost) { 
+    subfield <- paste(subfd_name, "_pcor", sep = "")
+    PC_subfield_pcor <- pcor.test(pull(data_total_thick_rm[subfd_name]), data_total_thick_rm[dv], 
+                                  c(data_total_thick_rm$sex, data_total_thick_rm$age, data_total_thick_rm$tiv), method = "pearson")
+    assign(subfd_name, PC_subfield_pcor)
+    r <- rbind(r, round(PC_subfield_pcor$estimate, digits = 3), round(PC_subfield_pcor$p.value, digits = 5))
+    # print(paste(i, "estimate is:", round(PC_subfield_pcor$estimate, digits = 2), 
+    #             "and p-value is:", round(PC_subfield_pcor$p.value, digits = 3))) 
+  } # ex. LCA1_pcor
+  
+  print(dv)
+  print(corr_mat_antpost(r))
+}
+
+ggplot(data = data_total_thick_rm, aes(y = propcorrect, x = tLaHC)) +
+  geom_point(color = palette_sbfd[8]) + geom_smooth(method = "lm", color = palette_sbfd[8]) +
+  ggtitle("Left aHC Thickness") + xlab("Normalized Thickness Ratio") +
+  ylab("Proportion Correct") + ylim(0, 1)
+
+# MULTIPLE LINEAR REGRESSION - CANNOT DO PARTIAL CORRECTION WITH SEX?
+## Pearson correlation: Assumptions check
+  # Homoscedasticity = constant variance
+  model <- lm(propcorrect ~ tLpHC, data = data_total_thick_rm) # Replace the X value with diff HC subdivisions
+  resid <- resid(model)
+  plot(fitted(model), resid)
+  # Linearity
+  plot(data_total_thick_rm$tLaHC, data_total_thick_rm$propcorrect) # Replace the X value with diff HC subdivisions
+  # Good to use pearson's correlation :)
+
+## Pearson's correlation tables between L/R ant/post thickness and propcorrect, patheff, patheff_acc_only (n=99)
+nav_dv <- c("propcorrect", "patheff", "patheff_acc_only")
+for (dv in nav_dv) {
+  r <- NULL;
+  
+  for (subfd_name in subfields_antpost) { 
+    subfield <- paste(subfd_name, "_pcor", sep = "")
+    PC_subfield_cor <- cor.test(pull(data_total_thick_rm[subfd_name]), data_total_thick_rm[,dv], method = "pearson")
+    assign(subfd_name, PC_subfield_cor)
+    r <- rbind(r, round(PC_subfield_cor$estimate, digits = 3), round(PC_subfield_cor$p.value, digits = 5))
+    # print(paste(i, "estimate is:", round(PC_subfield_cor$estimate, digits = 2), 
+    #             "and p-value is:", round(PC_subfield_cor$p.value, digits = 3))) 
+  } # ex. LCA1_cor
+  
+  print(dv)
+  print(corr_mat_antpost(r))
+}
+
+## Multiple linear regression
+model_tLaHC_propcorr <- lm(propcorrect ~ tLaHC + sex + age + tiv, data = data_total_thick_rm)
+model_tLaHC_patheff <- lm(patheff ~ tLaHC + sex + age + tiv, data = data_total_thick_rm)
+model_tLaHC_patheffacc <- lm(patheff_acc_only ~ tLaHC + sex + age + tiv, data = data_total_thick_rm)
+model_tLpHC_propcorr <- lm(propcorrect ~ tLpHC + sex + age + tiv, data = data_total_thick_rm)
+model_tLpHC_patheff <- lm(patheff ~ tLpHC + sex + age + tiv, data = data_total_thick_rm)
+model_tLpHC_patheffacc <- lm(patheff_acc_only ~ tLpHC + sex + age + tiv, data = data_total_thick_rm)
+model_tRaHC_propcorr <- lm(propcorrect ~ tRaHC + sex + age + tiv, data = data_total_thick_rm)
+model_tRaHC_patheff <- lm(patheff ~ tRaHC + sex + age + tiv, data = data_total_thick_rm)
+model_tRaHC_patheffacc <- lm(patheff_acc_only ~ tRaHC + sex + age + tiv, data = data_total_thick_rm)
+model_tRpHC_propcorr <- lm(propcorrect ~ tRpHC + sex + age + tiv, data = data_total_thick_rm)
+model_tRpHC_patheff <- lm(patheff ~ tRpHC + sex + age + tiv, data = data_total_thick_rm)
+model_tRpHC_patheffacc <- lm(patheff_acc_only ~ tRpHC + sex + age + tiv, data = data_total_thick_rm)
+
+  # Assumptions check:
+  # Linearity
+  plot(data_total_thick_rm$age, data_total_thick_rm$propcorrect)
+  # No multicollinearity
+  vif(model_tLaHC_propcorr) # Replace the value with diff models. outcome values should be less than 5
+  # Independent observations
+  # Homoscedasticity = constant variance
+  resid <- resid(model_tLaHC_propcorr) # Replace the value with diff models
+  plot(fitted(model_tLaHC_propcorr), resid) 
+  # Multivariate normality
+
+summary(model_tLaHC_propcorr)
+summary(model_tLaHC_patheff)
+summary(model_tLaHC_patheffacc)
+summary(model_tLpHC_propcorr)
+summary(model_tLpHC_patheff)
+summary(model_tLpHC_patheffacc)
+summary(model_tRaHC_propcorr)
+summary(model_tRaHC_patheff) 
+summary(model_tRaHC_patheffacc) 
+summary(model_tRpHC_propcorr) 
+summary(model_tRpHC_patheff) 
+summary(model_tRpHC_patheffacc) 
+
+#### --------------------- Section 2C: Total Ant/Post Volumes + Propcorr or Patheff (n=99) --------------------- ####
+# Check for outliers
+which(abs(scale(data_total_vol$aHC_vol)) > 3)
+which(abs(scale(data_total_vol$pHC_vol)) > 3)
+
+## Function that outputs correlation table for 2 subregions
+## Inputs: (1) list of correlation (r) values and p-values
+## Output: a correlation matrix (mat)/ table for the 2 subregions' r and p-values
+subfields_antpost <- c("aHC_vol", "pHC_vol")
+corr_mat_antpost <- function(r_list) {
+  corr_mat_antpost <- matrix(unlist(t(r_list)), byrow=T, 2, 2)
+  colnames(corr_mat_antpost) <- c("r", "p-value")
+  rownames(corr_mat_antpost) <- c("aHC", "pHC")
+  return(corr_mat_antpost)
+}
+
+# Partial correlation tables between total ant/post volumes and propcorrect, patheff, patheff_acc_only (n=99)
+nav_dv <- c("propcorrect", "patheff", "patheff_acc_only")
+for (dv in nav_dv) {
+  r <- NULL;
+  
+  for (subfd_name in subfields_antpost) { 
+    subfield <- paste(subfd_name, "_pcor", sep = "")
+    PC_subfield_pcor <- pcor.test(pull(data_total_vol[subfd_name]), data_total_vol[dv], 
+                                  c(data_total_vol$sex, data_total_vol$age, data_total_vol$tiv), method = "pearson")
+    assign(subfd_name, PC_subfield_pcor)
+    r <- rbind(r, round(PC_subfield_pcor$estimate, digits = 3), round(PC_subfield_pcor$p.value, digits = 5))
+    # print(paste(i, "estimate is:", round(PC_subfield_pcor$estimate, digits = 2), 
+    #             "and p-value is:", round(PC_subfield_pcor$p.value, digits = 3))) 
+  } # ex. LCA1_pcor
+  
+  print(dv)
+  print(corr_mat_antpost(r))
+}
+
+ggplot(data = data_total_vol, aes(y = propcorrect, x = aHC_vol)) +
+  geom_point(color = palette_sbfd[8]) + geom_smooth(method = "lm", color = palette_sbfd[8]) +
+  ggtitle("Total aHC Volume") + xlab("Anterior HC Volume (mm^3)") +
+  ylab("Proportion Correct") + ylim(0, 1)
+
+# MULTIPLE LINEAR REGRESSION - CANNOT DO PARTIAL CORRECTION WITH SEX?
+## Pearson correlation: Assumptions check
+  # Homoscedasticity = constant variance
+  model <- lm(propcorrect ~ aHC_vol, data = data_total_vol) # Replace the X value with diff HC subdivisions
+  resid <- resid(model)
+  plot(fitted(model), resid)
+  # Linearity
+  plot(data_total_vol$pHC_vol, data_total_vol$propcorrect) # Replace the X value with diff HC subdivisions
+  # Good to use pearson's correlation :)
+
+## Pearson's correlation tables between total ant/post volumes and propcorrect, patheff, patheff_acc_only (n=99)
+nav_dv <- c("propcorrect", "patheff", "patheff_acc_only")
+for (dv in nav_dv) {
+  r <- NULL;
+  
+  for (subfd_name in subfields_antpost) { 
+    subfield <- paste(subfd_name, "_pcor", sep = "")
+    PC_subfield_cor <- cor.test(pull(data_total_vol[subfd_name]), data_total_vol[,dv], method = "pearson")
+    assign(subfd_name, PC_subfield_cor)
+    r <- rbind(r, round(PC_subfield_cor$estimate, digits = 3), round(PC_subfield_cor$p.value, digits = 5))
+    # print(paste(i, "estimate is:", round(PC_subfield_cor$estimate, digits = 2), 
+    #             "and p-value is:", round(PC_subfield_cor$p.value, digits = 3))) 
+  } # ex. LCA1_cor
+  
+  print(dv)
+  print(corr_mat_antpost(r))
+}
+
+## Multiple linear regression
+model_aHC_propcorr <- lm(propcorrect ~ aHC_vol + sex + age + tiv, data = data_total_vol)
+model_aHC_patheff <- lm(patheff ~ aHC_vol + sex + age + tiv, data = data_total_vol)
+model_aHC_patheffacc <- lm(patheff_acc_only ~ aHC_vol + sex + age + tiv, data = data_total_vol)
+model_pHC_propcorr <- lm(propcorrect ~ pHC_vol + sex + age + tiv, data = data_total_vol)
+model_pHC_patheff <- lm(patheff ~ pHC_vol + sex + age + tiv, data = data_total_vol)
+model_pHC_patheffacc <- lm(patheff_acc_only ~ pHC_vol + sex + age + tiv, data = data_total_vol)
+
+  # Assumptions check:
+  # Linearity
+  plot(data_total_vol$aHC_vol, data_total_vol$propcorrect)
+  # No multicollinearity
+  vif(model_aHC_propcorr) # Replace the value with diff models. outcome values should be less than 5
+  # Independent observations
+  # Homoscedasticity = constant variance
+  resid <- resid(model_aHC_propcorr) # Replace the value with diff models
+  plot(fitted(model_aHC_propcorr), resid) 
+  # Multivariate normality
+
+summary(model_aHC_propcorr)
+summary(model_aHC_patheff)
+summary(model_aHC_patheffacc)
+summary(model_pHC_propcorr)
+summary(model_pHC_patheff)
+summary(model_pHC_patheffacc)
+
+#### -------------------- Section 2D: L/R/Mean Post-Ant Ratio + Propcorr or Patheff (n=96) --------------------- ####
+# Check for outliers
+which(abs(scale(data_total_vol_ratio$Lpa_ratio)) > 3) # 66
+which(abs(scale(data_total_vol_ratio$Rpa_ratio)) > 3) # 21, 26
+which(abs(scale(data_total_vol_ratio$meanpa_ratio)) > 3) # 21
+
+# Remove outliers
+data_total_vol_ratio_rm <- data_total_vol_ratio[-c(21, 26, 66),] # Participants 25, 31, 76
+
+## Function that outputs correlation table for 3 measures
+## Inputs: (1) list of correlation (r) values and p-values
+## Output: a correlation matrix (mat)/ table for the 3 measures' r and p-values
+subfields_ratio <- c("Lpa_ratio", "Rpa_ratio", "meanpa_ratio")
+corr_mat_ratio <- function(r_list) {
+  corr_mat_ratio <- matrix(unlist(t(r_list)), byrow=T, 3, 2)
+  colnames(corr_mat_ratio) <- c("r", "p-value")
+  rownames(corr_mat_ratio) <- subfields_ratio
+  return(corr_mat_ratio)
+}
+
+# Outliers removed: Partial correlation between L/R post/ant HC vol ratio and propcorrect, patheff, patheff_acc_only (n=96)
+nav_dv <- c("propcorrect", "patheff", "patheff_acc_only")
+for (dv in nav_dv) {
+  r <- NULL;
+  
+  for (subfd_name in subfields_ratio) { 
+    subfield <- paste(subfd_name, "_pcor", sep = "")
+    PC_subfield_pcor <- pcor.test(pull(data_total_vol_ratio_rm[subfd_name]), data_total_vol_ratio_rm[dv], 
+                                  c(data_total_vol_ratio_rm$sex, data_total_vol_ratio_rm$age, data_total_vol_ratio_rm$tiv), method = "pearson")
+    assign(subfd_name, PC_subfield_pcor)
+    r <- rbind(r, round(PC_subfield_pcor$estimate, digits = 3), round(PC_subfield_pcor$p.value, digits = 5))
+    # print(paste(i, "estimate is:", round(PC_subfield_pcor$estimate, digits = 2), 
+    #             "and p-value is:", round(PC_subfield_pcor$p.value, digits = 3))) 
+  } # ex. LCA1_pcor
+  
+  print(dv)
+  print(corr_mat_ratio(r))
+}
+
+ggplot(data = data_total_vol_ratio_rm, aes(y = propcorrect, x = Lpa_ratio)) + 
+  geom_point(color = palette[9]) + geom_smooth(method = "lm", color = palette[9]) +
+  ggtitle("Left pHC/aHC Ratio") + xlab("Left PostHC/AntHC Ratio") +
+  ylab("Proportion Correct") + ylim(0, 1)
+ggplot(data = data_total_vol_ratio_rm, aes(y = propcorrect, x = Rpa_ratio)) + 
+  geom_point(color = palette[9]) + geom_smooth(method = "lm", color = palette[9]) +
+  ggtitle("Right pHC/aHC Ratio") + xlab("Right PostHC/AntHC Ratio") +
+  ylab("Proportion Correct") + ylim(0, 1)
+ggplot(data = data_total_vol_ratio_rm, aes(y = propcorrect, x = meanpa_ratio)) + 
+  geom_point(color = palette[9]) + geom_smooth(method = "lm", color = palette[9]) +
+  ggtitle("Mean pHC/aHC Ratio") + xlab("Mean PostHC/AntHC Ratio") +
+  ylab("Proportion Correct") + ylim(0, 1)
+# ggplot(data = data_total_vol_ratio_rm, aes(y = patheff, x = Rpa_ratio)) + 
+#   geom_point(color = palette[9]) + geom_smooth(method = "lm", color = palette[9]) +
+#   ggtitle("Right pHC/aHC Ratio") + xlab("Right PostHC/AntHC Ratio") +
+#   ylab("Path Inefficiency (all trials)") + scale_y_continuous(breaks = seq(1, 10, by = 0.1))
+# ggplot(data = data_total_vol_ratio_rm, aes(y = patheff, x = meanpa_ratio)) + 
+#   geom_point(color = palette[9]) + geom_smooth(method = "lm", color = palette[9]) +
+#   ggtitle("Mean pHC/aHC Ratio") + xlab("Mean PostHC/AntHC Ratio") +
+#   ylab("Path Inefficiency (all trials)") + scale_y_continuous(breaks = seq(1, 10, by = 0.1))
+
+# MULTIPLE LINEAR REGRESSION - CANNOT DO PARTIAL CORRECTION WITH SEX?
+## Pearson correlation: Assumptions check
+  # Homoscedasticity = constant variance
+  model <- lm(propcorrect ~ Lpa_ratio, data = data_total_vol_ratio_rm) # Replace the X value with diff HC subdivisions
+  resid <- resid(model)
+  plot(fitted(model), resid)
+  # Linearity
+  plot(data_total_vol_ratio_rm$Lpa_ratio, data_total_vol_ratio_rm$propcorrect) # Replace the X value with diff HC subdivisions
+  # Good to use pearson's correlation :)
+
+## Pearson's correlation tables between total ant/post volumes and propcorrect, patheff, patheff_acc_only (n=96)
+nav_dv <- c("propcorrect", "patheff", "patheff_acc_only")
+for (dv in nav_dv) {
+  r <- NULL;
+  
+  for (subfd_name in subfields_ratio) { 
+    subfield <- paste(subfd_name, "_pcor", sep = "")
+    PC_subfield_cor <- cor.test(pull(data_total_vol_ratio_rm[subfd_name]), data_total_vol_ratio_rm[,dv], method = "pearson")
+    assign(subfd_name, PC_subfield_cor)
+    r <- rbind(r, round(PC_subfield_cor$estimate, digits = 3), round(PC_subfield_cor$p.value, digits = 5))
+    # print(paste(i, "estimate is:", round(PC_subfield_cor$estimate, digits = 2), 
+    #             "and p-value is:", round(PC_subfield_cor$p.value, digits = 3))) 
+  } # ex. LCA1_cor
+  
+  print(dv)
+  print(corr_mat_ratio(r))
+}
+
+## Multiple linear regression
+model_Lratio_propcorr <- lm(propcorrect ~ Lpa_ratio + sex + age + tiv, data = data_total_vol_ratio_rm)
+model_Lratio_patheff <- lm(patheff ~ Lpa_ratio + sex + age + tiv, data = data_total_vol_ratio_rm)
+model_Lratio_patheffacc <- lm(patheff_acc_only ~ Lpa_ratio + sex + age + tiv, data = data_total_vol_ratio_rm)
+model_Rratio_propcorr <- lm(propcorrect ~ Rpa_ratio + sex + age + tiv, data = data_total_vol_ratio_rm)
+model_Rratio_patheff <- lm(patheff ~ Rpa_ratio + sex + age + tiv, data = data_total_vol_ratio_rm)
+model_Rratio_patheffacc <- lm(patheff_acc_only ~ Rpa_ratio + sex + age + tiv, data = data_total_vol_ratio_rm)
+model_meanratio_propcorr <- lm(propcorrect ~ meanpa_ratio + sex + age + tiv, data = data_total_vol_ratio_rm)
+model_meanratio_patheff <- lm(patheff ~ meanpa_ratio + sex + age + tiv, data = data_total_vol_ratio_rm)
+model_meanratio_patheffacc <- lm(patheff_acc_only ~ meanpa_ratio + sex + age + tiv, data = data_total_vol_ratio_rm)
+
+  # Assumptions check:
+  # Linearity
+  plot(data_total_vol_ratio_rm$Lpa_ratio, data_total_vol_ratio_rm$propcorrect)
+  # No multicollinearity
+  vif(model_Lratio_propcorr) # Replace the value with diff models. outcome values should be less than 5
+  # Independent observations
+  # Homoscedasticity = constant variance
+  resid <- resid(model_Lratio_propcorrect) # Replace the value with diff models
+  plot(fitted(model_Lratio_propcorrect), resid) 
+  # Multivariate normality
+
+summary(model_Lratio_propcorr)
+summary(model_Lratio_patheff)
+summary(model_Lratio_patheffacc)
+summary(model_Rratio_propcorr)
+summary(model_Rratio_patheff)
+summary(model_Rratio_patheffacc)
+summary(model_meanratio_propcorr)
+summary(model_meanratio_patheff)
+summary(model_meanratio_patheffacc)
+
+#### --------------------- Section 3: Ant/Post/Total HC + SBSOD Multiple Lin. Regr. (n=96) --------------------- ####
+# Data
+data_survey_total_vol_rm <- merge(data_survey_scores[,1:8], data_total_vol_rm, by = "sub_id") %>% na.omit()
+dim(data_survey_total_vol_rm)
+
+# Multiple Linear Regression !!!!!!! IN PROGRESS !!!!!!!!!
+regionHC_LR <- c("LHC_vol", "RHC_vol", "totalHC_vol", "LaHC_vol", "LpHC_vol", "RaHC_vol", "RpHC_vol")
+for (region in regionHC_LR) {
+  lm_HCvol <- lm(propcorrect ~ SBSOD_score + region + tiv + SBSOD_score*region, data = data_survey_total_vol_rm)
+  
+  print(region)
+  print(summary(lm_HCvol))
+}
+
+#### -------------- Section 4A: *No cut-off* HR-T2 Subfield Volumes + Propcorr or Patheff (n=14) --------------- ####
+## Function that outputs correlation table for all 7 subfields
+## Inputs: (1) list of correlation (r) values and p-values
+## Output: a correlation matrix (mat)/ table for the 7 subfields' r and p-values
 subfields_all <- c("CA1", "CA2/3", "DG", "SUB", "ERC", "PRC", "PHC")
-corr_mat_allsub <- function(r_mat) {
-  corr_mat_allsub <- matrix(unlist(t(r_mat)), byrow=T, 7, 4)
-  colnames(corr_mat_allsub) <- c("Left (r)", "p", "Right (r)", "p")
+corr_mat_allsub <- function(r_list) {
+  corr_mat_allsub <- matrix(unlist(t(r_list)), byrow=T, 7, 4)
+  colnames(corr_mat_allsub) <- c("(Left) r", "p-value", "(Right) r", "p-value")
   rownames(corr_mat_allsub) <- subfields_all
   return(corr_mat_allsub)
 }
 
+dim(data_cut)
+
+# Partial correlation tables between no cutoff subfield volumes and propcorrect, patheff, patheff_acc_only (n=14)
+nav_dv <- c("propcorrect", "patheff", "patheff_acc_only")
+for (dv in nav_dv) {
+  r <- NULL;
+  
+  for (subfd_name in subfields_LR) { 
+    subfield <- paste(subfd_name, "_pcor", sep = "")
+    PC_subfield_pcor <- pcor.test(pull(data_cut[subfd_name]), data_cut[dv], 
+                                  c(data_cut$sex, data_cut$age, data_cut$tiv), method = "pearson")
+    assign(subfd_name, PC_subfield_pcor)
+    r <- rbind(r, round(PC_subfield_pcor$estimate, digits = 2), round(PC_subfield_pcor$p.value, digits = 4))
+    # print(paste(i, "estimate is:", round(PC_subfield_pcor$estimate, digits = 2), 
+    #             "and p-value is:", round(PC_subfield_pcor$p.value, digits = 3))) 
+  } # ex. LCA1_pcor
+  
+  print(dv)
+  print(corr_mat_allsub(r))
+}
+
+theme_set(theme2)
+# ggplot(data = data_cut, aes(y = patheff, x = LSUB)) +
+#   geom_point(color = palette_sbfd[4]) + geom_smooth(method = "lm", color = palette_sbfd[4]) +
+#   ggtitle("Path Efficiency and Left SUB Volume") +
+#   xlab("Left SUB Volume (mm^3)") + ylab("Path Inefficiency") + scale_y_continuous(breaks = seq(1, 10, by = 0.1)) # indiv subfield
+ggplot(data = data_cut, aes(y = patheff_acc_only, x = LCA23)) +
+  geom_point(color = palette_sbfd[2]) + geom_smooth(method = "lm", color = palette_sbfd[2]) +
+  ggtitle("Left CA2/3 Volume") +
+  xlab("Left CA2/3 Volume (mm^3)") + ylab("Path Inefficiency (Correct Trials Only)") + 
+  scale_y_continuous(breaks = seq(1, 10, by = 0.05)) + ylim(1, 1.25) # indiv subfield
+
+#### -------------- Section 4AA: *No cut-off* HR-T2 Subfield Volumes + Propcorr or Patheff (n=14) -------------- ####
+## Function that outputs correlation table for all 7 subfields ((combined hemisphere))
+## Inputs: (1) list of correlation (r) values and p-values
+## Output: a correlation matrix (mat)/ table for the 7 subfields' r and p-values
+subfields_all <- c("CA1", "CA23", "DG", "SUB", "ERC", "PRC", "PHC")
+corr_mat_allsub <- function(r_list) {
+  corr_mat_allsub <- matrix(unlist(t(r_list)), byrow=T, 7, 2)
+  colnames(corr_mat_allsub) <- c("r", "p-value")
+  rownames(corr_mat_allsub) <- subfields_all
+  return(corr_mat_allsub)
+}
+
+# Combine left and right hemispheres
+data_cut_LR <- data_cut %>% mutate(CA1 = LCA1 + RCA1, CA23 = LCA23 + RCA23, DG = LDG + RDG, SUB = LSUB + RSUB, 
+                                   ERC = LERC + RERC, PRC = LPRC + RPRC, PHC = LPHC + RPHC)
+
 # Partial correlation table between no cutoff subfield volumes and propcorrect
 r <- NULL;
 
-for (i in subfields_LR) { 
-  subfield_name <- paste(i, "_pcor", sep = "")
-  PC_subfield_pcor <- pcor.test(pull(data_cut[i]), data_cut$propcorrect, 
-                                c(data_cut$sex, data_cut$age, data_cut$tiv), method = "pearson")
-  assign(subfield_name, PC_subfield_pcor)
-  r <- rbind(r, round(PC_subfield_pcor$estimate, digits = 2), round(PC_subfield_pcor$p.value, digits = 3))
+for (subfd_name in subfields_all) { 
+  subfield <- paste(subfd_name, "_pcor", sep = "")
+  PC_subfield_pcor <- pcor.test(pull(data_cut_LR[subfd_name]), data_cut_LR$propcorrect, 
+                                c(data_cut_LR$sex, data_cut_LR$age, data_cut_LR$tiv), method = "pearson")
+  assign(subfd_name, PC_subfield_pcor)
+  r <- rbind(r, round(PC_subfield_pcor$estimate, digits = 2), round(PC_subfield_pcor$p.value, digits = 4))
   # print(paste(i, "estimate is:", round(PC_subfield_pcor$estimate, digits = 2), 
   #             "and p-value is:", round(PC_subfield_pcor$p.value, digits = 3))) 
 } # ex. LCA1_pcor
 
 corr_mat_allsub(r)
 
-# data_cut in long format
-col_order <- c("Spatial Neuro ID", "sex", "age", "propcorrect",
-               "LCA1", "LCA23", "LDG", "LSUB", "LERC", "LPRC", "LPHC",
-               "RCA1", "RCA23", "RDG", "RSUB", "RERC", "RPRC", "RPHC", "tiv")
-data_cut_long <- data_cut[, col_order] %>%
-  pivot_longer(cols = LCA1:RPHC, names_to = "roi", values_to = "roi_volume") %>%
-  mutate(sex = as.factor(sex)) # raw subfield volume in mm^3
-
-# Plots
-theme_set(theme2)
-subfields_facet <- c("L CA1", "L CA2/3", "L DG", "L SUB", "L ERC", "L PRC", "L PHC",
-                     "R CA1", "R CA2/3", "R DG", "R SUB", "R ERC", "R PRC", "R PHC")
-
-library(tidyr)
-data_cut_long$roi <- label_value(rep(subfields_facet, 13))
-data_cut_plot <- data_cut_long %>%
-  mutate(roi_f = factor(roi, levels=subfields_facet)) %>%
-  ggplot(aes(y = propcorrect, 
-             x = roi_volume, 
-             group = factor(roi_f))) +
-  geom_smooth(method = "lm", color = palette[9]) + 
-  geom_point(color = palette[9]) +
-  facet_wrap(~factor(roi_f), 
-             nrow = 2, scales = "free_x", drop = TRUE) +
-  scale_y_continuous(name = "Proportion Correct",
-                     breaks = seq(0, 1, 0.25), limits = c(0, 1.25), sec.axis = dup_axis()) + 
-  scale_x_continuous(name = "Hippocampal Subfield Volume (mm^3)") +
-  theme(panel.spacing.x = unit(0.2, units = "inches"),
-        axis.text.x = element_text(size = 8))
-data_cut_plot # proportion correct and subfield volume
-
-data_cut_plot_MF <- data_cut_long %>%
-  mutate(roi_f = factor(roi, levels=subfields_facet)) %>%
-  ggplot(aes(y = propcorrect, 
-             x = roi_volume, 
-             color = factor(sex, 
-                            levels = c("0", "1"), 
-                            labels = c("Female", "Male")), 
-             group = factor(roi_f))) +
-  geom_point() +
-  geom_smooth(method = "lm", aes(group = sex, fill = factor(sex,
-                                                            levels = c("0", "1")))) + 
-  scale_color_manual(values = c(palette[4], palette[5])) +
-  scale_fill_manual(values = c(palette[4], palette[5]), 
-                    name = "Biological Sex",
-                    labels = c("Female", "Male")) +
-  facet_wrap(~factor(roi_f), nrow = 2, scales = "free_x") +
-  scale_y_continuous(name = "Proportion Correct", 
-                     breaks = seq(0, 1, 0.25), limits = c(0, 1.25), sec.axis = dup_axis()) + 
-  scale_x_continuous(name = "Hippocampal Subfield Volume (mm^3)") +
-  labs(color = "Biological Sex", group = "roi") + 
-  # theme(legend.position = "bottom",
-  #       legend.direction = "horizontal",
-  #       legend.box = "horizontal")
-  theme(legend.position = "right",
-        legend.direction = "vertical",
-        legend.box = "vertical")
-data_cut_plot_MF # sex differences in proportion correct and subfield volume
-
-theme_set(theme1)
-ggplot(data = data_cut, aes(y = propcorrect, x = LCA1)) + 
-  geom_point(color = palette[9]) + geom_smooth(method = "lm", color = palette[9])+
-  ggtitle("Maze Accuracy and Left CA1 Volume") + 
-  xlab("Left CA1 Volumes") + ylab("Proportion Correct") + ylim(0,1) # indiv subfield
-
-#### ----------------- Section 5: *No cut-off* HR-T2 Subfield Volumes + Questionnaires (n=13) ------------------ ####
-## Video Game
-data_VG <- data_survey_scores[hres_sub_id,] %>%          # Note: using the same variable name from Section 1 + 2
-  dplyr::select("sub_id", "VG_hr", "VG_yr", "VG_score")
-VG_na <- c(which(is.na(data_VG$VG_hr) %in% "TRUE"))
-
-r_VG_hr <- NULL;
-r_VG_yr <- NULL;
-r_VG_score <- NULL;
-
-for (i in subfields_LR) { 
-  data_ques <- data.frame(data_cut[i], data_cut[,c("sex","age","tiv")], data_VG[,c("VG_hr","VG_yr","VG_score")])
-  data_ques <- data_ques[-(VG_na),] #12
-  colnames(data_ques) <- c(i, "sex", "age", "tiv", "VG_hr", "VG_yr", "VG_score")
-
-  VG_hr_sub_pcor <- pcor.test(data_ques[i], data_ques$VG_hr, data_ques[c("sex","age","tiv")], method = "pearson")
-  VG_yr_sub_pcor <- pcor.test(data_ques[i], data_ques$VG_yr, data_ques[c("sex","age","tiv")], method = "pearson")
-  VG_score_sub_pcor <- pcor.test(data_ques[i], data_ques$VG_score, data_ques[c("sex","age","tiv")], method = "pearson")
-  
-  r_VG_hr <- rbind(r_VG_hr, round(VG_hr_sub_pcor$estimate, digits = 2), round(VG_hr_sub_pcor$p.value, digits = 3))
-  r_VG_yr <- rbind(r_VG_yr, round(VG_yr_sub_pcor$estimate, digits = 2), round(VG_yr_sub_pcor$p.value, digits = 3))
-  r_VG_score <- rbind(r_VG_score, round(VG_score_sub_pcor$estimate, digits = 2), round(VG_score_sub_pcor$p.value, digits = 3))
-}
-
-corr_mat_allsub(r_VG_hr)
-corr_mat_allsub(r_VG_yr)
-corr_mat_allsub(r_VG_score)
-
-## Road Map
-data_RM <- data_survey_scores[hres_sub_id,] %>% 
-  dplyr::select("sub_id", "RM_score")
-RM_na <- c(which(is.na(data_RM$RM_score) %in% "TRUE"))
-
-r_RM <- NULL;
-
-for (i in subfields_LR) { 
-  data_ques <- data.frame(data_cut[i], data_cut[,c("sex","age","tiv")], data_RM$RM_score)
-  # data_ques <- data_ques[-(RM_na),] #12
-  colnames(data_ques) <- c(i, "sex", "age", "tiv", "RM_score")
-  
-  RM_sub_pcor <- pcor.test(data_ques[i], data_ques$RM_score, data_ques[c("sex","age","tiv")], method = "pearson")
-  r_RM <- rbind(r_RM, round(RM_sub_pcor$estimate, digits = 2), round(RM_sub_pcor$p.value, digits = 3))
-}
-
-corr_mat_allsub(r_RM)
-
-## SBSOD
-data_SBSOD <- data_survey_scores[hres_sub_id,] %>% 
-  dplyr::select("sub_id", "SBSOD_score")
-SBSOD_na <- c(which(is.na(data_SBSOD$SBSOD_score) %in% "TRUE"))
-
-r_SBSOD <- NULL;
-
-for (i in subfields_LR) {
-  data_ques <- data.frame(data_cut[i], data_cut[,c("sex","age","tiv")], data_SBSOD$SBSOD_score)
-  data_ques <- data_ques[-(SBSOD_na),] #11
-  colnames(data_ques) <- c(i, "sex", "age", "tiv", "SBSOD_score")
-  
-  SBSOD_sub_pcor <- pcor.test(data_ques[i], data_ques$SBSOD_score, data_ques[c("sex","age","tiv")], method = "pearson")
-  r_SBSOD <- rbind(r_SBSOD, round(SBSOD_sub_pcor$estimate, digits = 2), round(SBSOD_sub_pcor$p.value, digits = 3))
-}
-
-corr_mat_allsub(r_SBSOD)
-
-## Handedness
-data_hand <- data_survey_scores[hres_sub_id,] %>% 
-  dplyr::select("sub_id", "Hand_score")
-hand_na <- c(which(is.na(data_hand$Hand_score) %in% "TRUE"))
-
-r_hand <- NULL;
-
-for (i in subfields_LR) { 
-  data_ques <- data.frame(data_cut[i], data_cut[,c("sex","age","tiv")], data_hand$Hand_score)
-  data_ques <- data_ques[-(hand_na),] #11
-  colnames(data_ques) <- c(i, "sex", "age", "tiv", "hand_score")
-  
-  hand_sub_pcor <- pcor.test(data_ques[i], data_ques$hand_score, data_ques[c("sex","age","tiv")], method = "pearson")
-  r_hand <- rbind(r_hand, round(hand_sub_pcor$estimate, digits = 2), round(hand_sub_pcor$p.value, digits = 3))
-}
-
-corr_mat_allsub(r_hand)
-
-## Spatial Orientation
-data_SOT <- data_survey_scores[hres_sub_id,] %>% 
-  dplyr::select("sub_id", "SOT_score")
-SOT_na <- c(which(is.na(data_SOT$SOT_score) %in% "TRUE"))
-
-r_SOT <- NULL;
-
-for (i in subfields_LR) { 
-  data_ques <- data.frame(data_cut[i], data_cut[,c("sex","age","tiv")], data_SOT$SOT_score)
-  # data_ques <- data_ques[-(SOT_na),] #12
-  colnames(data_ques) <- c(i, "sex", "age", "tiv", "SOT_score")
-  
-  SOT_sub_pcor <- pcor.test(data_ques[i], data_ques$SOT_score, data_ques[c("sex","age","tiv")], method = "pearson")
-  r_SOT <- rbind(r_SOT, round(SOT_sub_pcor$estimate, digits = 2), round(SOT_sub_pcor$p.value, digits = 3))
-}
-
-corr_mat_allsub(r_SOT)
-
-#### ------- Section 6: *No cut-off* Subfield Volumes (as a ratio over tiv) + Proportion Correct (n=13) -------- ####
-# Define custom data (tiv) for 13 subjects without cutoffs
-data_cut_tiv <- data_cut[, col_order] %>%
-  mutate(tiv = tiv * 1000000) %>%
-  mutate(LCA1_tiv = LCA1/tiv, RCA1_tiv = RCA1/tiv,
-         LCA23_tiv = LCA23/tiv, RCA23_tiv = RCA23/tiv,
-         LDG_tiv = LDG/tiv, RDG_tiv = RDG/tiv,
-         LSUB_tiv = LSUB/tiv, RSUB_tiv = RSUB/tiv,
-         LERC_tiv = LERC/tiv, RERC_tiv = RERC/tiv,
-         LPRC_tiv = LPRC/tiv, RPRC_tiv = RPRC/tiv,
-         LPHC_tiv = LPHC/tiv, RPHC_tiv = RPHC/tiv,) %>%
-  dplyr::select('Spatial Neuro ID', sex, age, propcorrect, LCA1_tiv:RPHC_tiv)
-# Partial correlation table between no cutoff subfield volumes (RATIO) and propcorrect
-subfields_LR_tiv <- NULL;
-
-for (i in subfields_LR) {
-  subfields_LR_tiv <- rbind(subfields_LR_tiv, paste(i, "_tiv", sep = ""))
-}
-subfields_LR_tiv <- subfields_LR_tiv[,1]
-
+# Partial correlation table between no cutoff subfield volumes and patheff
 r <- NULL;
 
-for (i in subfields_LR_tiv) { 
-  subfield_name <- paste(i, "_pcor", sep = "")
-  PC_subfield_tiv_pcor <- pcor.test(pull(data_cut_tiv[i]), data_cut_tiv$propcorrect, 
-                                    c(data_cut_tiv$sex, data_cut_tiv$age), method = "pearson")
-  assign(subfield_name, PC_subfield_tiv_pcor)
-  r <- rbind(r, round(PC_subfield_tiv_pcor$estimate, digits = 2), round(PC_subfield_tiv_pcor$p.value, digits = 3))
-  # print(paste(i, "estimate is:", round(PC_subfield_tiv_pcor$estimate, digits = 2), 
-  #             "and p-value is:", round(PC_subfield_tiv_pcor$p.value, digits = 3))) 
-} # ex. LCA1_tiv_pcor
+for (subfd_name in subfields_all) { 
+  subfield <- paste(subfd_name, "_pcor", sep = "")
+  PC_subfield_pcor <- pcor.test(pull(data_cut_LR[subfd_name]), data_cut_LR$tm_pathefficiencies, 
+                                c(data_cut_LR$sex, data_cut_LR$age, data_cut_LR$tiv), method = "pearson")
+  assign(subfd_name, PC_subfield_pcor)
+  r <- rbind(r, round(PC_subfield_pcor$estimate, digits = 2), round(PC_subfield_pcor$p.value, digits = 4))
+  # print(paste(i, "estimate is:", round(PC_subfield_pcor$estimate, digits = 2), 
+  #             "and p-value is:", round(PC_subfield_pcor$p.value, digits = 3))) 
+} # ex. LCA1_pcor
 
 corr_mat_allsub(r)
 
-# data_cut in long format
-col_order <- c("Spatial Neuro ID", "sex", "age", "propcorrect",
-               "LCA1", "LCA23", "LDG", "LSUB", "LERC", "LPRC", "LPHC",
-               "RCA1", "RCA23", "RDG", "RSUB", "RERC", "RPRC", "RPHC", "tiv")
-data_cut_long_tiv <- data_cut_tiv %>%
-  pivot_longer(cols = LCA1_tiv:RPHC_tiv, names_to = "roi_tiv", values_to = "roi_volume_tiv") %>%
-  mutate(tiv_norm = normalize(roi_volume_tiv)) %>%
-  mutate(sex = as.factor(sex)) # ratio between subfield volume and tiv
-
-# Plots
-theme_set(theme2)
-data_cut_long_tiv$roi_tiv <- label_value(rep(subfields_facet, 13))
-data_cut_plot_tiv <- data_cut_long_tiv %>%
-  mutate(roi_f = factor(roi_tiv, levels = subfields_facet)) %>%
-  ggplot(aes(y = propcorrect, 
-             x = roi_volume_tiv, 
-             group = factor(roi_f))) +
-  geom_smooth(method = "lm", color=palette[9]) + 
-  geom_point(color = palette[9]) +
-  facet_wrap(~factor(roi_f), 
-             nrow = 2, scales = "free_x", drop = TRUE) +
-  scale_y_continuous(name = "Proportion Correct",
-                     breaks = seq(0, 1, 0.25), limits = c(0, 1.25), sec.axis = dup_axis()) + 
-  scale_x_continuous(name = "Ratio between Subfield Volume and TIV") +
-  theme(panel.spacing.x = unit(0.2, units = "inches"),
-        axis.text.x = element_text(size = 8))
-data_cut_plot_tiv # proportion correct and ratio between subfield volume and tiv
-
-data_cut_plot_tiv_norm <- data_cut_long_tiv %>%
-  mutate(roi_f = factor(roi_tiv, levels = subfields_facet)) %>%
-  ggplot(aes(y = propcorrect, 
-             x = tiv_norm, 
-             group = factor(roi_f))) +
-  geom_smooth(method = "lm", color=palette[3]) + 
-  geom_point(color = palette[4]) +
-  facet_wrap(~factor(roi_f), 
-             nrow = 2, scales = "free_x", drop = TRUE) +
-  scale_y_continuous(name = "Proportion Correct",
-                     breaks = seq(0, 1, 0.25), limits = c(0, 1.25), sec.axis = dup_axis()) + 
-  scale_x_continuous(name = "Normalized Subfield Volume") +
-  theme(panel.spacing.x = unit(0.2, units = "inches"),
-        axis.text.x = element_text(size = 8))
-data_cut_plot_tiv_norm # proportion correct and normalized ratio
-
-data_cut_plot_tiv_MF <- data_cut_long_tiv %>%
-  mutate(roi_f = factor(roi_tiv, levels = subfields_facet)) %>%
-  ggplot(aes(y = propcorrect, 
-             x = roi_volume_tiv, 
-             color = factor(sex, 
-                            levels = c("0", "1"), 
-                            labels = c("Female", "Male")), 
-             group = factor(roi_f))) +
-  geom_point() +
-  geom_smooth(method = "lm", aes(group = sex, fill = factor(sex,
-                                                            levels = c("0", "1")))) + 
-  scale_color_manual(values = c(palette[4], palette[5])) +
-  scale_fill_manual(values = c(palette[4], palette[5]), 
-                    name = "Biological Sex",
-                    labels = c("Female", "Male")) +
-  facet_wrap(~factor(roi_f), nrow = 2, scales = "free_x") +
-  scale_y_continuous(name = "Proportion Correct", 
-                     breaks = seq(0, 1, 0.25), limits = c(0, 1.25), sec.axis = dup_axis()) + 
-  scale_x_continuous(name = "Ratio between Subfield Volume and TIV") +
-  labs(color = "Biological Sex", group = "roi") + 
-  theme(legend.position = "bottom",
-        legend.direction = "horizontal",
-        legend.box = "horizontal")
-data_cut_plot_tiv_MF # sex differences in proportion correct and ratio between subfield volume and tiv
-
-data_cut_plot_tiv_norm_MF <- data_cut_long_tiv %>%
-  mutate(roi_f = factor(roi_tiv, levels = subfields_facet)) %>%
-  ggplot(aes(y = propcorrect, 
-             x = tiv_norm, 
-             color = factor(sex, 
-                            levels = c("0", "1"), 
-                            labels = c("Female", "Male")), 
-             group = factor(roi_f))) +
-  geom_point() +
-  geom_smooth(method = "lm", aes(group = sex, fill = factor(sex,
-                                                            levels = c("0", "1")))) + 
-  scale_color_manual(values = c(palette[4], palette[5])) +
-  scale_fill_manual(values = c(palette[4], palette[5]), 
-                    name = "Biological Sex",
-                    labels = c("Female", "Male")) +
-  facet_wrap(~factor(roi_f), nrow = 2, scales = "free_x") +
-  scale_y_continuous(name = "Proportion Correct", 
-                     breaks = seq(0, 1, 0.25), limits = c(0, 1.25), sec.axis = dup_axis()) + 
-  scale_x_continuous(name = "Normalized Subfield Volume") +
-  labs(color = "Biological Sex", group = "roi") + 
-  theme(legend.position = "bottom",
-        legend.direction = "horizontal",
-        legend.box = "horizontal")
-data_cut_plot_tiv_norm_MF # sex differences in proportion correct and normalized ratio
-
-#### ----------------------- Section 7: Reg-T2 Subfield Volumes + Proportion Correct (n=12) -------------------- ####
-# Define custom data for 12 subjects with regT2 subfield volumes
-data_T2w <- data_regT2 %>% tidyr::drop_na(LaHC, LpHC, LERC, LPRC, LPHC, RaHC, RpHC, RERC, RPRC, RPHC) %>%
-  dplyr::select("Spatial Neuro ID","sex","age","propcorrect","tm_pathefficiencies","LaHC","LpHC",
-                "LERC","LPRC","LPHC","RaHC","RpHC","RERC","RPRC","RPHC","tiv")
-
-# Create function: correlation table for 5 subfields
-subfields_T2w <- c("aHC", "pHC", "ERC", "PRC", "PHC")
-corr_mat_T2wsub <- function(r_mat) {
-  corr_mat_T2wsub <- matrix(unlist(t(r_mat)), byrow=T, 5, 4)
-  colnames(corr_mat_T2wsub) <- c("Left (r)", "p", "Right (r)", "p")
-  rownames(corr_mat_T2wsub) <- subfields_T2w
-  return(corr_mat_T2wsub)
-}
-
-# Partial correlation table between subfield volume and propcorrect
-subfields_T2w_LR <- c("LaHC", "RaHC", "LpHC", "RpHC", "LERC", "RERC", "LPRC", "RPRC", "LPHC", "RPHC")
-
-r <- NULL;
-
-for (i in subfields_T2w_LR) { 
-  subfield_name <- paste(i, "_pcor", sep = "")
-  PC_subfield_pcor <- pcor.test(pull(data_T2w[i]), data_T2w$propcorrect, 
-                                c(data_T2w$sex, data_T2w$age, data_T2w$tiv), method = "pearson")
-  assign(subfield_name, PC_subfield_pcor)
-  r <- rbind(r, round(PC_subfield_pcor$estimate, digits = 2), round(PC_subfield_pcor$p.value, digits = 3))
-  # print(paste(i, "estimate is:", round(PC_subfield_pcor$estimate, digits = 2),
-  #             "and p-value is:", round(PC_subfield_pcor$p.value, digits = 3)))
-} # ex. LaHC_pcor
-
-corr_mat_T2wsub(r)
-
-# data_tMTL in long format
-data_T2w_long <- data_T2w %>%
-  pivot_longer(cols = LaHC:RPHC, names_to = "roi", values_to = "roi_thickness") %>%
-  mutate(sex = as.factor(sex))
-
-# Plots
-subfields_T2w_facet <- c("L aHC", "L pHC", "L ERC", "L PRC", "L PHC",
-                         "R aHC", "R pHC", "R ERC", "R PRC", "R PHC")
-data_T2w_long$roi <- label_value(rep(subfields_T2w_facet, 12))
-data_T2w_plot <- data_T2w_long %>%
-  mutate(roi_f = factor(roi, levels = subfields_T2w_facet)) %>%
-  ggplot(aes(y = propcorrect, 
-             x = roi_thickness, 
-             group = factor(roi_f))) +
-  geom_smooth(method = "lm", color=palette[9]) + 
-  geom_point(color = palette[9]) +
-  facet_wrap(~factor(roi_f), 
-             nrow = 2, scales = "free_x", drop = TRUE) +
-  scale_y_continuous(name = "Proportion Correct",
-                     breaks = seq(0, 1, 0.25), limits = c(0, 1.25), sec.axis = dup_axis()) + 
-  scale_x_continuous(name = "Subfield Volume (mm^3)") +
-  theme(panel.spacing.x = unit(0.2, units = "inches"),
-        axis.text.x = element_text(size = 8))
-data_T2w_plot
-
-data_T2w_plot_MF <- data_T2w_long %>%
-  mutate(roi_f = factor(roi, levels = subfields_T2w_facet)) %>%
-  ggplot(aes(y = propcorrect, 
-             x = roi_thickness,
-             color = factor(sex, 
-                            levels = c("0", "1"), 
-                            labels = c("Female", "Male")), 
-             group = factor(roi_f))) +
-  geom_point() +
-  geom_smooth(method = "lm", aes(group = sex, fill = factor(sex,
-                                                            levels = c("0", "1")))) + 
-  scale_color_manual(values = c(palette[4], palette[5])) +
-  scale_fill_manual(values = c(palette[4], palette[5]), 
-                    name = "Biological Sex",
-                    labels = c("Female", "Male")) +
-  facet_wrap(~factor(roi_f), nrow = 2, scales = "free_x") +
-  scale_y_continuous(name = "Proportion Correct", 
-                     breaks = seq(0, 1, 0.25), limits = c(0, 1.25), sec.axis = dup_axis()) + 
-  scale_x_continuous(name = "Subfield Volume (mm^3)") +
-  labs(color = "Biological Sex", group = "roi") + 
-  theme(legend.position = "bottom",
-        legend.direction = "horizontal",
-        legend.box = "horizontal") +
-  theme(panel.spacing.x = unit(0.2, units = "inches"),
-        axis.text.x = element_text(size = 8))
-data_T2w_plot_MF
-
-ggplot(data = data_regT2, aes(y = propcorrect, x = RaHC)) + 
-  geom_point() + geom_smooth(method= "lm", color='#e080de') +
-  ggtitle("Right aHC Thickness and Proportion Correct") + 
-  xlab("Right aHC Thicknesses") + ylab("Proportion Correct") + ylim(0, 1) #indiv subfield
-ggplot(data = data_regT2, aes(y = propcorrect, x = LPRC)) + 
-  geom_point() + geom_smooth(method= "lm", color='#e080de') +
-  ggtitle("Left PRC Thickness and Proportion Correct") + 
-  xlab("Left PRC Thicknesses") + ylab("Proportion Correct") + ylim(0, 1) #indiv subfield
-ggplot(data = data_regT2, aes(y = propcorrect, x = RaHC, 
-                              color = factor(sex, 
-                                             levels = c("0", "1"), 
-                                             labels = c("Female", "Male")))) +
-  geom_point() + geom_smooth(method = "lm", se = FALSE) +
-  ggtitle("Right aHC Thickness and Proportion Correct") +
-  xlab("Right aHC Thicknesses") + ylab("Proportion Correct") + ylim(0, 1) +
-  labs(color = "Biological Sex") #color by sex
-ggplot(data = data_regT2, aes(y = propcorrect, x = LPHC, 
-                              color = factor(sex, 
-                                             levels = c("0", "1"), 
-                                             labels = c("Female", "Male")))) +
-  geom_point() + geom_smooth(method = "lm", se = FALSE) +
-  ggtitle("Left PRC Thickness and Proportion Correct") +
-  xlab("Left PRC Thicknesses") + ylab("Proportion Correct") + ylim(0, 1) +
-  labs(color = "Biological Sex") #color by sex
-
-#### ----------------- Section 8: Other MTL Volumes (hr-T2 + regT2) + Proportion Correct (n=25) ---------------- ####
-# Create function: correlation table for 3 other MTL subfields
-subfields_MTL <- c("ERC", "PRC", "PHC")
-corr_mat_MTLsub <- function(r_mat) {
-  corr_mat_MTLsub <- matrix(unlist(t(r_mat)), byrow=T, 3, 4)
-  colnames(corr_mat_MTLsub) <- c("Left (r)", "p", "Right (r)", "p")
-  rownames(corr_mat_MTLsub) <- subfields_MTL
-  return(corr_mat_MTLsub)
-}
-
-# Partial correlation table between other MTL volumes (hr-T2 + regT2) and propcorrect
-subfields_MTL_LR <- c("LERC", "RERC", "LPRC", "RPRC", "LPHC", "RPHC")
-
-r <- NULL;
-
-for (i in subfields_MTL_LR) { 
-  subfield_name <- paste(i, "_pcor", sep = "")
-  PC_subfield_pcor <- pcor.test(pull(data_MTL_T2w[i]), data_MTL_T2w$propcorrect, 
-                                 c(data_MTL_T2w$sex, data_MTL_T2w$age, data_MTL_T2w$tiv), method = "pearson")
-  assign(subfield_name, PC_subfield_pcor)
-  r <- rbind(r, round(PC_subfield_pcor$estimate, digits = 2), round(PC_subfield_pcor$p.value, digits = 3))
-  # print(paste(i, "estimate is:", round(PC_subfield_pcor$estimate, digits = 2),
-  #             "and p-value is:", round(PC_subfield_pcor$p.value, digits = 3)))
-} # ex. tLaHC_pcor
-
-corr_mat_MTLsub(r)
-
-# data_tMTL in long format
-data_MTL_T2w_long <- data_MTL_T2w %>%
-  pivot_longer(cols = LERC:RPHC, names_to = "roi", values_to = "roi_volume") %>%
-  mutate(sex = as.factor(sex))
-
-# Plots
-subfields_MTL_facet <- c("L ERC", "L PRC", "L PHC",
-                         "R ERC", "R PRC", "R PHC")
-data_MTL_T2w_long$roi <- label_value(rep(subfields_MTL_facet, 25))
-data_MTL_T2w_plot <- data_MTL_T2w_long %>%
-  mutate(roi_f = factor(roi, levels = subfields_MTL_facet)) %>%
-  ggplot(aes(y = propcorrect, 
-             x = roi_volume, 
-             group = factor(roi_f))) +
-  geom_smooth(method = "lm", color=palette[9]) + 
-  geom_point(color = palette[9]) +
-  facet_wrap(~factor(roi_f), 
-             nrow = 2, scales = "free_x", drop = TRUE) +
-  scale_y_continuous(name = "Proportion Correct",
-                     breaks = seq(0, 1, 0.25), limits = c(0, 1.25), sec.axis = dup_axis()) + 
-  scale_x_continuous(name = "Other MTL Subfield Volume (mm^3)") +
-  theme(panel.spacing.x = unit(0.2, units = "inches"),
-        axis.text.x = element_text(size = 8))
-data_MTL_T2w_plot
-
-data_MTL_T2w_plot_MF <- data_MTL_T2w_long %>%
-  mutate(roi_f = factor(roi, levels = subfields_MTL_facet)) %>%
-  ggplot(aes(y = propcorrect, 
-             x = roi_volume,
-             color = factor(sex, 
-                            levels = c("0", "1"), 
-                            labels = c("Female", "Male")), 
-             group = factor(roi_f))) +
-  geom_point() +
-  geom_smooth(method = "lm", aes(group = sex, fill = factor(sex,
-                                                            levels = c("0", "1")))) + 
-  scale_color_manual(values = c(palette[4], palette[5])) +
-  scale_fill_manual(values = c(palette[4], palette[5]), 
-                    name = "Biological Sex",
-                    labels = c("Female", "Male")) +
-  facet_wrap(~factor(roi_f), nrow = 2, scales = "free_x") +
-  scale_y_continuous(name = "Proportion Correct", 
-                     breaks = seq(0, 1, 0.25), limits = c(0, 1.25), sec.axis = dup_axis()) + 
-  scale_x_continuous(name = "Other MTL Subfield Volume (mm^3)") +
-  labs(color = "Biological Sex", group = "roi") +
-  theme(legend.position = "bottom",
-        legend.direction = "horizontal",
-        legend.box = "horizontal")
-  # theme(legend.position = "right",
-  #       legend.direction = "vertical",
-  #       legend.box = "vertical")
-  # theme(panel.spacing.x = unit(0.2, units = "inches"),
-  #       axis.text.x = element_text(size = 8))
-data_MTL_T2w_plot_MF
-
-#### --------------------------- Section 9: HC Thickness + Proportion Correct (n=25) --------------------------- ####
-# Create function: correlation table for 4 HC subfields
-subfields_HC <- c("CA1", "CA2/3", "DG", "SUB")
-corr_mat_HCsub <- function(r_mat) {
-  corr_mat_HCsub <- matrix(unlist(t(r_mat)), byrow=T, 4, 4)
-  colnames(corr_mat_HCsub) <- c("Left (r)", "p", "Right (r)", "p")
-  rownames(corr_mat_HCsub) <- subfields_HC
-  return(corr_mat_HCsub)
-}
-
-# Partial correlation table between subfield thickness and propcorrect
-subfields_HC_LR <- c("LCA1", "RCA1", "LCA23", "RCA23", "LDG", "RDG", "LSUB", "RSUB")
-
+#### ------------- Section 4B: *No cut-off* HR-T2 Subfield Thickness + Propcorr or Patheff (n=26) -------------- ####
+# Subfield thickness
 subfields_tHC_LR <- NULL;
 
-for (i in subfields_HC_LR) {
-  subfields_tHC_LR <- rbind(subfields_tHC_LR, paste("t", i, sep = ""))
+for (subfd_name in subfields_LR) {
+  subfields_tHC_LR <- rbind(subfields_tHC_LR, paste("t", subfd_name, sep = ""))
 }
 subfields_tHC_LR <- subfields_tHC_LR[,1]
 
-r <- NULL;
+dim(data_tdata)
 
-for (i in subfields_tHC_LR) { 
-  subfield_name <- paste(i, "_pcor", sep = "")
-  PC_tsubfield_pcor <- pcor.test(pull(data_tHC_25[i]), data_tHC_25$propcorrect, 
-                                    c(data_tHC_25$sex, data_tHC_25$age, data_tHC_25$tiv), method = "pearson")
-  assign(subfield_name, PC_tsubfield_pcor)
-  r <- rbind(r, round(PC_tsubfield_pcor$estimate, digits = 2), round(PC_tsubfield_pcor$p.value, digits = 3))
-  # print(paste(i, "estimate is:", round(PC_tsubfield_pcor$estimate, digits = 2), 
-  #             "and p-value is:", round(PC_tsubfield_pcor$p.value, digits = 3))) 
-} # ex. tLCA1_pcor
-
-corr_mat_HCsub(r)
-
-# data_tHC_25 in long format
-data_tHC_long <- data_tHC_25 %>%
-  pivot_longer(cols = tLCA1:tRSUB, names_to = "roi", values_to = "roi_thickness") %>%
-  mutate(sex = as.factor(sex))
-
-# Plots
-subfields_HC_facet <- c("L CA1", "L CA2/3", "L DG", "L SUB",
-                        "R CA1", "R CA2/3", "R DG", "R SUB")
-data_tHC_long$roi <- label_value(rep(subfields_HC_facet, 25))
-data_tHC_plot <- data_tHC_long %>%
-  mutate(roi_f = factor(roi, levels = subfields_HC_facet)) %>%
-  ggplot(aes(y = propcorrect, 
-             x = roi_thickness, 
-             group = factor(roi_f))) +
-  geom_smooth(method = "lm", color=palette[9]) + 
-  geom_point(color = palette[9]) +
-  facet_wrap(~factor(roi_f), 
-             nrow = 2, scales = "free_x", drop = TRUE) +
-  scale_y_continuous(name = "Proportion Correct",
-                     breaks = seq(0, 1, 0.25), limits = c(0, 1.25), sec.axis = dup_axis()) + 
-  scale_x_continuous(name = "Hippocampal Subfield Thickness (mm^3)") +
-  theme(panel.spacing.x = unit(0.2, units = "inches"),
-        axis.text.x = element_text(size = 8))
-data_tHC_plot
-
-data_tHC_plot_MF <- data_tHC_long %>%
-  mutate(roi_f = factor(roi, levels = subfields_HC_facet)) %>%
-  ggplot(aes(y = propcorrect, 
-             x = roi_thickness,
-             color = factor(sex, 
-                            levels = c("0", "1"), 
-                            labels = c("Female", "Male")), 
-             group = factor(roi_f))) +
-  geom_point() +
-  geom_smooth(method = "lm", aes(group = sex, fill = factor(sex,
-                                                            levels = c("0", "1")))) + 
-  scale_color_manual(values = c(palette[6], palette[2])) +
-  scale_fill_manual(values = c(palette[6], palette[2]), 
-                    name = "Biological Sex",
-                    labels = c("Female", "Male")) +
-  facet_wrap(~factor(roi_f), nrow = 2, scales = "free_x") +
-  scale_y_continuous(name = "Proportion Correct", 
-                     breaks = seq(0, 1, 0.25), limits = c(0, 1.25), sec.axis = dup_axis()) + 
-  scale_x_continuous(name = "Hippocampal Subfield Thickness (mm^3)") +
-  labs(color = "Biological Sex", group = "roi") + 
-  # theme(legend.position = "bottom",
-  #       legend.direction = "horizontal",
-  #       legend.box = "horizontal")
-  theme(legend.position = "right",
-        legend.direction = "vertical",
-        legend.box = "vertical")
-  # theme(panel.spacing.x = unit(0.2, units = "inches"),
-  #       axis.text.x = element_text(size = 8))
-data_tHC_plot_MF
-
-ggplot(data = data_tHC_25, aes(y = propcorrect, x = tLDG)) + 
-  geom_point() + geom_smooth(method= "lm", color='#5a7cb3') +
-  ggtitle("Left DG Thickness and Proportion Correct") + 
-  xlab("Left DG Thicknesses") + ylab("Proportion Correct") + ylim(0, 1) #indiv subfield
-ggplot(data = data_tHC_25, aes(y = propcorrect, x = tLDG, 
-                            color = factor(sex, 
-                                           levels = c("0", "1"), 
-                                           labels = c("Female", "Male")))) +
-  geom_point() + geom_smooth(method = "lm", se = FALSE) +
-  ggtitle("Left DG Thicknesses and Proportion Correct") +
-  xlab("Left DG Thicknesses") + ylab("Proportion Correct") + ylim(0, 1) +
-  labs(color = "Biological Sex") #color by sex
-
-#### ---------------------------- Section 10: HC Thickness + Questionnaires (n=25) ----------------------------- ####
-## !!! Note: currently missing tiv for sub-092 !!!
-## Video Game
-data_VG <- data_survey_scores[hres_sub_id,] %>% 
-  dplyr::select("sub_id", "VG_hr", "VG_yr", "VG_score")
-
-VG_na <- c(which(is.na(data_VG$VG_hr) %in% "TRUE"))
-
-r_VG_hr <- NULL;
-r_VG_yr <- NULL;
-r_VG_score <- NULL;
-
-for (i in subfields_tHC_LR) { 
-  data_ques <- data.frame(data_tHC_26[i], data_tHC_26[,c("sex","age","tiv")], data_VG[,c("VG_hr","VG_yr","VG_score")])
-  data_ques <- data_ques[-(VG_na),] #22
-  colnames(data_ques) <- c(i, "sex", "age", "tiv", "VG_hr", "VG_yr", "VG_score")
+# Partial correlation tables between subfield thickness and propcorrect, patheff, patheff_acc_only (n=26)
+nav_dv <- c("propcorrect", "patheff", "patheff_acc_only")
+for (dv in nav_dv) {
+  r <- NULL;
   
-  # VG_hr_sub_pcor <- pcor.test(data_ques[i], data_ques$VG_hr, data_ques[c("sex","age","tiv")], method = "pearson")
-  # VG_yr_sub_pcor <- pcor.test(data_ques[i], data_ques$VG_yr, data_ques[c("sex","age","tiv")], method = "pearson")
-  # VG_score_sub_pcor <- pcor.test(data_ques[i], data_ques$VG_score, data_ques[c("sex","age","tiv")], method = "pearson")
-  # 
-  # r_VG_hr <- rbind(r_VG_hr, round(VG_hr_sub_pcor$estimate, digits = 2), round(VG_hr_sub_pcor$p.value, digits = 3))
-  # r_VG_yr <- rbind(r_VG_yr, round(VG_yr_sub_pcor$estimate, digits = 2), round(VG_yr_sub_pcor$p.value, digits = 3))
-  # r_VG_score <- rbind(r_VG_score, round(VG_score_sub_pcor$estimate, digits = 2), round(VG_score_sub_pcor$p.value, digits = 3))
-}
-
-corr_mat_HCsub(r_VG_hr)
-corr_mat_HCsub(r_VG_yr)
-corr_mat_HCsub(r_VG_score)
-
-## Road Map
-data_RM <- data_survey_scores[hres_sub_id,] %>% 
-  dplyr::select("sub_id", "RM_score")
-
-RM_na <- c(which(is.na(data_RM$RM_score) %in% "TRUE"))
-
-r_RM <- NULL;
-
-for (i in subfields_tHC_LR) { 
-  data_ques <- data.frame(data_tHC_26[i], data_tHC_26[,c("sex","age","tiv")], data_RM$RM_score)
-  data_ques <- data_ques[-(RM_na),] #24
-  colnames(data_ques) <- c(i, "sex", "age", "tiv", "RM_score")
+  for (subfd_name in subfields_tHC_LR) { 
+    subfield <- paste(subfd_name, "_pcor", sep = "")
+    PC_tsubfield_pcor <- pcor.test(pull(data_tdata[subfd_name]), data_tdata[dv], 
+                                   c(data_tdata$sex, data_tdata$age, data_tdata$tiv), method = "pearson")
+    assign(subfd_name, PC_tsubfield_pcor)
+    r <- rbind(r, round(PC_tsubfield_pcor$estimate, digits = 2), round(PC_tsubfield_pcor$p.value, digits = 4))
+    # print(paste(i, "estimate is:", round(PC_tsubfield_pcor$estimate, digits = 2), 
+    #             "and p-value is:", round(PC_tsubfield_pcor$p.value, digits = 3))) 
+  } # ex. tLCA1_pcor
   
-  RM_sub_pcor <- pcor.test(data_ques[i], data_ques$RM_score, data_ques[c("sex","age","tiv")], method = "pearson")
-  r_RM <- rbind(r_RM, round(RM_sub_pcor$estimate, digits = 2), round(RM_sub_pcor$p.value, digits = 3))
+  print(dv)
+  print(corr_mat_allsub(r))
 }
 
-corr_mat_HCsub(r_RM)
+#### -------------- Section 5A: HR-T2 *Body-only* Subfield Volumes + Propcorr or Patheff (n=17) ---------------- ####
+## Function that outputs correlation table for 6 subfields
+## Inputs: (1) list of correlation (r) values and p-values
+## Output: a correlation matrix (mat)/ table for the 6 subfields' r and p-values
+subfields_6 <- c("CA1", "CA2/3", "DG", "SUB", "PRC", "PHC")
+corr_mat_6sub <- function(r_list) {
+  corr_mat_6sub <- matrix(unlist(t(r_list)), byrow=T, 6, 4)
+  colnames(corr_mat_6sub) <- c("(Left) r", "p-value", "(Right) r", "p-value")
+  rownames(corr_mat_6sub) <- subfields_6
+  return(corr_mat_6sub)
+}
 
-## SBSOD
-data_SBSOD <- data_survey_scores[hres_sub_id,] %>% 
-  dplyr::select("sub_id", "SBSOD_score")
+subfields_LR6 <- subfields_LR[-c(9:10)]
 
-SBSOD_na <- c(which(is.na(data_SBSOD$SBSOD_score) %in% "TRUE"))
+dim(data_HCbody_cut)
 
-r_SBSOD <- NULL;
-
-for (i in subfields_tHC_LR) { 
-  data_ques <- data.frame(data_tHC_26[i], data_tHC_26[,c("sex","age","tiv")], data_SBSOD$SBSOD_score)
-  data_ques <- data_ques[-(SBSOD_na),] #24
-  colnames(data_ques) <- c(i, "sex", "age", "tiv", "SBSOD_score")
+# Partial correlation tables between body-only subfield volumes and propcorrect, patheff, patheff_acc_only (n=17)
+nav_dv <- c("propcorrect", "patheff", "patheff_acc_only")
+for (dv in nav_dv) {
+  r <- NULL;
   
-  SBSOD_sub_pcor <- pcor.test(data_ques[i], data_ques$SBSOD_score, data_ques[c("sex","age","tiv")], method = "pearson")
-  r_SBSOD <- rbind(r_SBSOD, round(SBSOD_sub_pcor$estimate, digits = 2), round(SBSOD_sub_pcor$p.value, digits = 3))
-}
-
-corr_mat_HCsub(r_SBSOD)
-
-## Handedness
-data_hand <- data_survey_scores[hres_sub_id,] %>% 
-  dplyr::select("sub_id", "Hand_score")
-
-hand_na <- c(which(is.na(data_hand$Hand_score) %in% "TRUE"))
-
-r_hand <- NULL;
-
-for (i in subfields_tHC_LR) { 
-  data_ques <- data.frame(data_tHC_26[i], data_tHC_26[,c("sex","age","tiv")], data_hand$Hand_score)
-  data_ques <- data_ques[-(hand_na),] #23
-  colnames(data_ques) <- c(i, "sex", "age", "tiv", "hand_score")
+  for (subfd_name in subfields_LR6) { 
+    subfield <- paste(subfd_name, "_pcor", sep = "")
+    PC_subfield_pcor <- pcor.test(pull(data_HCbody_cut[subfd_name]), data_HCbody_cut[dv], 
+                                  c(data_HCbody_cut$sex, data_HCbody_cut$age, data_HCbody_cut$tiv), method = "pearson")
+    assign(subfd_name, PC_subfield_pcor)
+    r <- rbind(r, round(PC_subfield_pcor$estimate, digits = 2), round(PC_subfield_pcor$p.value, digits = 4))
+    # print(paste(i, "estimate is:", round(PC_subfield_pcor$estimate, digits = 2), 
+    #             "and p-value is:", round(PC_subfield_pcor$p.value, digits = 3))) 
+  } # ex. LCA1_pcor
   
-  hand_sub_pcor <- pcor.test(data_ques[i], data_ques$hand_score, data_ques[c("sex","age","tiv")], method = "pearson")
-  r_hand <- rbind(r_hand, round(hand_sub_pcor$estimate, digits = 2), round(hand_sub_pcor$p.value, digits = 3))
+  print(dv)
+  print(corr_mat_6sub(r))
 }
 
-corr_mat_HCsub(r_hand)
+ggplot(data = data_HCbody_cut, aes(y = patheff_acc_only, x = RCA1)) +
+  geom_point(color = palette_sbfd[1]) + geom_smooth(method = "lm", color = palette_sbfd[1]) +
+  ggtitle("Right CA1 Volume") +
+  xlab("Right CA1 Volume (mm^3)") + ylab("Path Inefficiency (Correct Trials Only)") + 
+  scale_y_continuous(breaks = seq(1, 10, by = 0.05)) + ylim(1, 1.25) # indiv subfield
 
-## Spatial Orientation
-data_SOT <- data_survey_scores[hres_sub_id,] %>% 
-  dplyr::select("sub_id", "SOT_score")
+#### ---------------- Section 5B: HR-T2 *Body-only* Subfield Thick + Propcorr or Patheff (n=17) ---------------- ####
+subfields_tLR6 <- subfields_tHC_LR[-c(9:10)]
 
-SOT_na <- c(which(is.na(data_SOT$SOT_score) %in% "TRUE"))
-
-r_SOT <- NULL;
-
-for (i in subfields_tHC_LR) { 
-  data_ques <- data.frame(data_tHC_26[i], data_tHC_26[,c("sex","age","tiv")], data_SOT$SOT_score)
-  data_ques <- data_ques[-(SOT_na),] #23
-  colnames(data_ques) <- c(i, "sex", "age", "tiv", "SOT_score")
+# Partial correlation tables between body-only subfield thickness and propcorrect, patheff, patheff_acc_only (n=17)
+nav_dv <- c("propcorrect", "patheff", "patheff_acc_only")
+for (dv in nav_dv) {
+  r <- NULL;
   
-  SOT_sub_pcor <- pcor.test(data_ques[i], data_ques$SOT_score, data_ques[c("sex","age","tiv")], method = "pearson")
-  r_SOT <- rbind(r_SOT, round(SOT_sub_pcor$estimate, digits = 2), round(SOT_sub_pcor$p.value, digits = 3))
-}
-
-corr_mat_HCsub(r_SOT)
-
-#### ----------------------- Section 11: Other MTL Thickness + Proportion Correct (n=13) ----------------------- ####
-# Create function: correlation table for 3 other MTL subfields
-subfields_MTL <- c("ERC", "PRC", "PHC")
-corr_mat_MTLsub <- function(r_mat) {
-  corr_mat_MTLsub <- matrix(unlist(t(r_mat)), byrow=T, 3, 4)
-  colnames(corr_mat_MTLsub) <- c("Left (r)", "p", "Right (r)", "p")
-  rownames(corr_mat_MTLsub) <- subfields_MTL
-  return(corr_mat_MTLsub)
-}
-
-# Partial correlation table between subfield thickness and propcorrect
-subfields_MTL_LR <- c("LERC", "RERC", "LPRC", "RPRC", "LPHC", "RPHC")
-
-subfields_tMTL_LR <- NULL;
-
-for (i in subfields_MTL_LR) {
-  subfields_tMTL_LR <- rbind(subfields_tMTL_LR, paste("t", i, sep = ""))
-}
-subfields_tMTL_LR <- subfields_tMTL_LR[,1]
-
-r <- NULL;
-
-for (i in subfields_tMTL_LR) { 
-  subfield_name <- paste(i, "_pcor", sep = "")
-  PC_tsubfield_pcor <- pcor.test(pull(data_tMTL[i]), data_tMTL$propcorrect, 
-                                 c(data_tMTL$sex,data_tMTL$age,data_tMTL$tiv), method = "pearson")
-  assign(subfield_name, PC_tsubfield_pcor)
-  r <- rbind(r, round(PC_tsubfield_pcor$estimate, digits = 2), round(PC_tsubfield_pcor$p.value, digits = 3))
-  # print(paste(i, "estimate is:", round(PC_tsubfield_pcor$estimate, digits = 2), 
-  #             "and p-value is:", round(PC_tsubfield_pcor$p.value, digits = 3))) 
-} # ex. tLERC_pcor
-
-corr_mat_MTLsub(r)
-
-# data_tMTL in long format
-data_tMTL_long <- data_tMTL %>%
-  pivot_longer(cols = tLERC:tRPHC, names_to = "roi", values_to = "roi_thickness") %>%
-  mutate(sex = as.factor(sex))
-
-# Plots
-subfields_MTL_facet <- c("L ERC", "L PRC", "L PHC",
-                         "R ERC", "R PRC", "R PHC")
-data_tMTL_long$roi <- label_value(rep(subfields_MTL_facet, 13))
-data_tMTL_plot <- data_tMTL_long %>%
-  mutate(roi_f = factor(roi, levels = subfields_MTL_facet)) %>%
-  ggplot(aes(y = propcorrect, 
-             x = roi_thickness, 
-             group = factor(roi_f))) +
-  geom_smooth(method = "lm", color=palette[9]) + 
-  geom_point(color = palette[9]) +
-  facet_wrap(~factor(roi_f), 
-             nrow = 2, scales = "free_x", drop = TRUE) +
-  scale_y_continuous(name = "Proportion Correct",
-                     breaks = seq(0, 1, 0.25), limits = c(0, 1.25), sec.axis = dup_axis()) + 
-  scale_x_continuous(name = "Other MTL Subfield Thickness (mm^3)") +
-  theme(panel.spacing.x = unit(0.2, units = "inches"),
-        axis.text.x = element_text(size = 8))
-data_tMTL_plot
-
-data_tMTL_plot_MF <- data_tMTL_long %>%
-  mutate(roi_f = factor(roi, levels = subfields_MTL_facet)) %>%
-  ggplot(aes(y = propcorrect, 
-             x = roi_thickness,
-             color = factor(sex, 
-                            levels = c("0", "1"), 
-                            labels = c("Female", "Male")), 
-             group = factor(roi_f))) +
-  geom_point() +
-  geom_smooth(method = "lm", aes(group = sex, fill = factor(sex,
-                                                            levels = c("0", "1")))) + 
-  scale_color_manual(values = c(palette[4], palette[5])) +
-  scale_fill_manual(values = c(palette[4], palette[5]), 
-                    name = "Biological Sex",
-                    labels = c("Female", "Male")) +
-  facet_wrap(~factor(roi_f), nrow = 2, scales = "free_x") +
-  scale_y_continuous(name = "Proportion Correct", 
-                     breaks = seq(0, 1, 0.25), limits = c(0, 1.25), sec.axis = dup_axis()) + 
-  scale_x_continuous(name = "Other MTL Subfield Thickness (mm^3)") +
-  labs(color = "Biological Sex", group = "roi") + 
-  # theme(legend.position = "bottom",
-  #       legend.direction = "horizontal",
-  #       legend.box = "horizontal") +
-  theme(legend.position = "right",
-        legend.direction = "vertical",
-        legend.box = "vertical")
-  # theme(panel.spacing.x = unit(0.2, units = "inches"),
-  #       axis.text.x = element_text(size = 8))
-data_tMTL_plot_MF
-
-ggplot(data = data_tMTL, aes(y = propcorrect, x = tRPRC)) + 
-  geom_point() + geom_smooth(method= "lm", color='#e080de') +
-  ggtitle("Right PRC Thickness and Proportion Correct") + 
-  xlab("Right PRC Thicknesses") + ylab("Proportion Correct") + ylim(0, 1) #indiv subfield
-ggplot(data = data_tMTL, aes(y = propcorrect, x = tRPRC, 
-                            color = factor(sex, 
-                                           levels = c("0", "1"), 
-                                           labels = c("Female", "Male")))) +
-  geom_point() + geom_smooth(method = "lm", se = FALSE) +
-  ggtitle("Right PRC Thickness and Proportion Correct") +
-  xlab("Right PRC Thicknesses") + ylab("Proportion Correct") + ylim(0, 1) +
-  labs(color = "Biological Sex") #color by sex
-
-#### ------------------------- Section 12: Other MTL Thickness + Questionnaires (n=13) ------------------------- ####
-## Video Game
-data_VG <- data_survey_scores[hres_sub_id,] %>% 
-  dplyr::select("sub_id", "VG_hr", "VG_yr", "VG_score")
-
-VG_na <- c(which(is.na(data_VG$VG_hr) %in% "TRUE"))
-
-r_VG_hr <- NULL;
-r_VG_yr <- NULL;
-r_VG_score <- NULL;
-
-for (i in subfields_tMTL_LR) { 
-  data_ques <- data.frame(data_tMTL[i], data_tMTL[,c("sex","age","tiv")], data_VG[,c("VG_hr","VG_yr","VG_score")])
-  data_ques <- data_ques[-(VG_na),] #12
-  colnames(data_ques) <- c(i, "sex", "age", "tiv", "VG_hr", "VG_yr", "VG_score")
+  for (subfd_name in subfields_tLR6) { 
+    subfield <- paste(subfd_name, "_pcor", sep = "")
+    PC_subfield_pcor <- pcor.test(pull(data_tHCbody_cut[subfd_name]), data_tHCbody_cut[dv], 
+                                  c(data_tHCbody_cut$sex, data_tHCbody_cut$age, data_tHCbody_cut$tiv), method = "pearson")
+    assign(subfd_name, PC_subfield_pcor)
+    r <- rbind(r, round(PC_subfield_pcor$estimate, digits = 2), round(PC_subfield_pcor$p.value, digits = 4))
+    # print(paste(i, "estimate is:", round(PC_subfield_pcor$estimate, digits = 2), 
+    #             "and p-value is:", round(PC_subfield_pcor$p.value, digits = 3))) 
+  } # ex. LCA1_pcor
   
-  VG_hr_sub_pcor <- pcor.test(data_ques[i], data_ques$VG_hr, data_ques[c("sex","age","tiv")], method = "pearson")
-  VG_yr_sub_pcor <- pcor.test(data_ques[i], data_ques$VG_yr, data_ques[c("sex","age","tiv")], method = "pearson")
-  VG_score_sub_pcor <- pcor.test(data_ques[i], data_ques$VG_score, data_ques[c("sex","age","tiv")], method = "pearson")
-  
-  r_VG_hr <- rbind(r_VG_hr, round(VG_hr_sub_pcor$estimate, digits = 2), round(VG_hr_sub_pcor$p.value, digits = 3))
-  r_VG_yr <- rbind(r_VG_yr, round(VG_yr_sub_pcor$estimate, digits = 2), round(VG_yr_sub_pcor$p.value, digits = 3))
-  r_VG_score <- rbind(r_VG_score, round(VG_score_sub_pcor$estimate, digits = 2), round(VG_score_sub_pcor$p.value, digits = 3))
+  print(dv)
+  print(corr_mat_6sub(r))
 }
 
-corr_mat_MTLsub(r_VG_hr)
-corr_mat_MTLsub(r_VG_yr)
-corr_mat_MTLsub(r_VG_score)
+ggplot(data = data_tHCbody_cut, aes(y = patheff_acc_only, x = tLCA1)) +
+  geom_point(color = palette_sbfd[1]) + geom_smooth(method = "lm", color = palette_sbfd[1])+
+  ggtitle("Left CA1 Thickness") +
+  xlab("Normalized Thickness Ratio") + ylab("Path Inefficiency (Correct Trials Only)") + 
+  scale_y_continuous(breaks = seq(1, 10, by = 0.05)) + ylim(1, 1.25) # indiv subfield
+# ggplot(data = data_tHCbody_cut, aes(y = patheff_acc_only, x = tLPHC)) +
+#   geom_point(color = palette_sbfd[7]) + geom_smooth(method = "lm", color = palette_sbfd[7])+
+#   ggtitle("Left PHC Thickness") +
+#   xlab("Normalized Thickness Ratio") + ylab("Path Inefficiency (Correct Trials Only)") + 
+#   scale_y_continuous(breaks = seq(1, 10, by = 0.05)) # indiv subfield
 
-## Road Map
-data_RM <- data_survey_scores[hres_sub_id,] %>% 
-  dplyr::select("sub_id", "RM_score")
-
-RM_na <- c(which(is.na(data_RM$RM_score) %in% "TRUE"))
-
-r_RM <- NULL;
-
-for (i in subfields_tMTL_LR) { 
-  data_ques <- data.frame(data_tMTL[i], data_tMTL[,c("sex","age","tiv")], data_RM$RM_score)
-  # data_ques <- data_ques[-(RM_na),] #12
-  colnames(data_ques) <- c(i, "sex", "age", "tiv", "RM_score")
-  
-  RM_sub_pcor <- pcor.test(data_ques[i], data_ques$RM_score, data_ques[c("sex","age","tiv")], method = "pearson")
-  r_RM <- rbind(r_RM, round(RM_sub_pcor$estimate, digits = 2), round(RM_sub_pcor$p.value, digits = 3))
+#### ------------------ Section 6A: Full Reg-T2 Subfield Volumes + Propcorr or Patheff (n=26) ------------------ ####
+## Function that outputs correlation table for all 5 subfields
+## Inputs: (1) list of correlation (r) values and p-values
+## Output: a correlation matrix (mat)/ table for the 5 subfields' r and p-values
+subfields_regT2 <- c("aHC", "pHC", "ERC", "PRC", "PHC")
+subfields_LRregT2 <- c("LaHC", "RaHC", "LpHC", "RpHC", "LERC", "RERC", "LPRC", "RPRC", "LPHC", "RPHC")
+corr_mat_5sub <- function(r_list) {
+  corr_mat_5sub <- matrix(unlist(t(r_list)), byrow=T, 5, 4)
+  colnames(corr_mat_5sub) <- c("(Left) r", "p-value", "(Right) r", "p-value")
+  rownames(corr_mat_5sub) <- subfields_regT2
+  return(corr_mat_5sub)
 }
 
-corr_mat_MTLsub(r_RM)
+dim(data_regT2)
 
-## SBSOD
-data_SBSOD <- data_survey_scores[hres_sub_id,] %>% 
-  dplyr::select("sub_id", "SBSOD_score")
-
-SBSOD_na <- c(which(is.na(data_SBSOD$SBSOD_score) %in% "TRUE"))
-
-r_SBSOD <- NULL;
-
-for (i in subfields_tMTL_LR) { 
-  data_ques <- data.frame(data_tMTL[i], data_tMTL[,c("sex","age","tiv")], data_SBSOD$SBSOD_score)
-  data_ques <- data_ques[-(SBSOD_na),] #11
-  colnames(data_ques) <- c(i, "sex", "age", "tiv", "SBSOD_score")
+# Partial correlation tables between manual regT2 subfield volumes and propcorrect, patheff, patheff_acc_only (n=26)
+nav_dv <- c("propcorrect", "patheff", "patheff_acc_only")
+for (dv in nav_dv) {
+  r <- NULL;
   
-  SBSOD_sub_pcor <- pcor.test(data_ques[i], data_ques$SBSOD_score, data_ques[c("sex","age","tiv")], method = "pearson")
-  r_SBSOD <- rbind(r_SBSOD, round(SBSOD_sub_pcor$estimate, digits = 2), round(SBSOD_sub_pcor$p.value, digits = 3))
+  for (subfd_name in subfields_LRregT2) { 
+    subfield <- paste(subfd_name, "_pcor", sep = "")
+    PC_subfield_pcor <- pcor.test(pull(data_regT2[subfd_name]), data_regT2[dv], 
+                                  c(data_regT2$sex, data_regT2$age, data_regT2$tiv), method = "pearson")
+    assign(subfd_name, PC_subfield_pcor)
+    r <- rbind(r, round(PC_subfield_pcor$estimate, digits = 2), round(PC_subfield_pcor$p.value, digits = 4))
+    # print(paste(i, "estimate is:", round(PC_subfield_pcor$estimate, digits = 2), 
+    #             "and p-value is:", round(PC_subfield_pcor$p.value, digits = 3))) 
+  } # ex. LCA1_pcor
+  
+  print(dv)
+  print(corr_mat_5sub(r))
 }
 
-corr_mat_MTLsub(r_SBSOD)
+ggplot(data = data_regT2, aes(y = patheff_acc_only, x = RERC)) + 
+  geom_point(color = palette_sbfd[5]) + geom_smooth(method = "lm", color = palette_sbfd[5]) +
+  ggtitle("Right ERC Volume") + 
+  xlab("Right ERC Volume (mm^3)") + ylab("Path Inefficiency (Correct Trials Only)") + 
+  scale_y_continuous(breaks = seq(1, 10, by = 0.05)) + ylim(1, 1.25) # indiv subfield
+ggplot(data = data_regT2, aes(y = patheff_acc_only, x = LPHC)) + 
+  geom_point(color = palette_sbfd[7]) + geom_smooth(method = "lm", color = palette_sbfd[7]) +
+  ggtitle("Left PHC Volume") + 
+  xlab("Left PHC Volume (mm^3)") + ylab("Path Inefficiency (Correct Trials Only)") + 
+  scale_y_continuous(breaks = seq(1, 10, by = 0.05)) + ylim(1, 1.25) # indiv subfield
 
-## Handedness
-data_hand <- data_survey_scores[hres_sub_id,] %>% 
-  dplyr::select("sub_id", "Hand_score")
-
-hand_na <- c(which(is.na(data_hand$Hand_score) %in% "TRUE"))
-
-r_hand <- NULL;
-
-for (i in subfields_tMTL_LR) { 
-  data_ques <- data.frame(data_tMTL[i], data_tMTL[,c("sex","age","tiv")], data_hand$Hand_score)
-  data_ques <- data_ques[-(hand_na),] #11
-  colnames(data_ques) <- c(i, "sex", "age", "tiv", "hand_score")
-  
-  hand_sub_pcor <- pcor.test(data_ques[i], data_ques$hand_score, data_ques[c("sex","age","tiv")], method = "pearson")
-  r_hand <- rbind(r_hand, round(hand_sub_pcor$estimate, digits = 2), round(hand_sub_pcor$p.value, digits = 3))
-}
-
-corr_mat_MTLsub(r_hand)
-
-## Spatial Orientation
-data_SOT <- data_survey_scores[hres_sub_id,] %>% 
-  dplyr::select("sub_id", "SOT_score")
-
-SOT_na <- c(which(is.na(data_SOT$SOT_score) %in% "TRUE"))
-
-r_SOT <- NULL;
-
-for (i in subfields_tMTL_LR) { 
-  data_ques <- data.frame(data_tMTL[i], data_tMTL[,c("sex","age","tiv")], data_SOT$SOT_score)
-  # data_ques <- data_ques[-(SOT_na),] #12
-  colnames(data_ques) <- c(i, "sex", "age", "tiv", "SOT_score")
-  
-  SOT_sub_pcor <- pcor.test(data_ques[i], data_ques$SOT_score, data_ques[c("sex","age","tiv")], method = "pearson")
-  r_SOT <- rbind(r_SOT, round(SOT_sub_pcor$estimate, digits = 2), round(SOT_sub_pcor$p.value, digits = 3))
-}
-
-corr_mat_MTLsub(r_SOT)
-
-#### ------------------------ Section 13: Subfield Thickness + Proportion Correct (n=12) ----------------------- ####
+#### ----------------- Section 6B: Full Reg-T2 Subfield Thickness + Propcorr or Patheff (n=26) ----------------- ####
 # Create function: correlation table for 5 subfields
-subfields_T2w <- c("aHC", "pHC", "ERC", "PRC", "PHC")
-corr_mat_T2wsub <- function(r_mat) {
-  corr_mat_T2wsub <- matrix(unlist(t(r_mat)), byrow=T, 5, 4)
-  colnames(corr_mat_T2wsub) <- c("Left (r)", "p", "Right (r)", "p")
-  rownames(corr_mat_T2wsub) <- subfields_T2w
-  return(corr_mat_T2wsub)
+subfields_regT2 <- c("aHC", "pHC", "ERC", "PRC", "PHC")
+corr_mat_5sub <- function(r_list) {
+  corr_mat_5sub <- matrix(unlist(t(r_list)), byrow=T, 5, 4)
+  colnames(corr_mat_5sub) <- c("(Left) r", "p-value", "(Right) r", "p-value")
+  rownames(corr_mat_5sub) <- subfields_regT2
+  return(corr_mat_5sub)
 }
 
-# Partial correlation table between subfield thickness and propcorrect
-subfields_T2w_LR <- c("LaHC", "RaHC", "LpHC", "RpHC", "LERC", "RERC", "LPRC", "RPRC", "LPHC", "RPHC")
-
-subfields_tT2w_LR <- NULL;
-
-for (i in subfields_T2w_LR) {
-  subfields_tT2w_LR <- rbind(subfields_tT2w_LR, paste("t", i, sep = ""))
+subfields_tLRregT2 <- NULL;
+for (subfd_name in subfields_LRregT2) {
+  subfields_tLRregT2 <- rbind(subfields_tLRregT2, paste("t", subfd_name, sep = ""))
 }
-subfields_tT2w_LR <- subfields_tT2w_LR[,1]
+subfields_tLRregT2 <- subfields_tLRregT2[,1]
 
-r <- NULL;
+# Partial correlation tables between manual regT2 subfield thickness and propcorrect, patheff, patheff_acc_only (n=26)
+nav_dv <- c("propcorrect", "patheff", "patheff_acc_only")
+for (dv in nav_dv) {
+  r <- NULL;
+  
+  for (subfd_name in subfields_tLRregT2) { 
+    subfield <- paste(subfd_name, "_pcor", sep = "")
+    PC_tsubfield_pcor <- pcor.test(pull(data_tregT2[subfd_name]), data_tregT2[dv], 
+                                   c(data_tregT2$sex, data_tregT2$age, data_tregT2$tiv), method = "pearson")
+    assign(subfd_name, PC_tsubfield_pcor)
+    r <- rbind(r, round(PC_tsubfield_pcor$estimate, digits = 2), round(PC_tsubfield_pcor$p.value, digits = 4))
+    # print(paste(i, "estimate is:", round(PC_tsubfield_pcor$estimate, digits = 2), 
+    #             "and p-value is:", round(PC_tsubfield_pcor$p.value, digits = 3))) 
+  } # ex. tLCA1_pcor
+  
+  print(dv)
+  print(corr_mat_5sub(r))
+}
 
-for (i in subfields_tT2w_LR) { 
-  subfield_name <- paste(i, "_pcor", sep = "")
-  PC_tsubfield_pcor <- pcor.test(pull(data_tT2w[i]), data_tT2w$propcorrect, 
-                                 c(data_tT2w$sex,data_tT2w$age,data_tT2w$tiv), method = "pearson")
-  assign(subfield_name, PC_tsubfield_pcor)
-  r <- rbind(r, round(PC_tsubfield_pcor$estimate, digits = 2), round(PC_tsubfield_pcor$p.value, digits = 3))
-  # print(paste(i, "estimate is:", round(PC_tsubfield_pcor$estimate, digits = 2),
-  #             "and p-value is:", round(PC_tsubfield_pcor$p.value, digits = 3)))
-} # ex. tLaHC_pcor
-
-corr_mat_T2wsub(r)
-
-# data_tMTL in long format
-data_tT2w_long <- data_tT2w %>%
-  pivot_longer(cols = tLaHC:tRPHC, names_to = "roi", values_to = "roi_thickness") %>%
-  mutate(sex = as.factor(sex))
-
-# Plots
-theme_set(theme2)
-subfields_T2w_facet <- c("L aHC", "L pHC", "L ERC", "L PRC", "L PHC",
-                         "R aHC", "R pHC", "R ERC", "R PRC", "R PHC")
-data_tT2w_long$roi <- label_value(rep(subfields_T2w_facet, 12))
-data_tT2w_plot <- data_tT2w_long %>%
-  mutate(roi_f = factor(roi, levels=subfields_T2w_facet)) %>%
-  ggplot(aes(y = propcorrect, 
-             x = roi_thickness, 
-             group = factor(roi_f))) +
-  geom_smooth(method = "lm", color=palette[9]) + 
-  geom_point(color = palette[9]) +
-  facet_wrap(~factor(roi_f), 
-             nrow = 2, scales = "free_x", drop = TRUE) +
-  scale_y_continuous(name = "Proportion Correct",
-                     breaks = seq(0, 1, 0.25), limits = c(0, 1.25), sec.axis = dup_axis()) + 
-  scale_x_continuous(name = "Subfield Thickness (mm^3)") +
-  theme(panel.spacing.x = unit(0.2, units = "inches"),
-        axis.text.x = element_text(size = 8))
-data_tT2w_plot
-
-data_tT2w_plot_MF <- data_tT2w_long %>%
-  mutate(roi_f = factor(roi, levels=subfields_T2w_facet)) %>%
-  ggplot(aes(y = propcorrect, 
-             x = roi_thickness,
-             color = factor(sex, 
-                            levels = c("0", "1"), 
-                            labels = c("Female", "Male")), 
-             group = factor(roi_f))) +
-  geom_point() +
-  geom_smooth(method = "lm", aes(group = sex, fill = factor(sex,
-                                                            levels = c("0", "1")))) + 
-  scale_color_manual(values = c(palette[4], palette[5])) +
-  scale_fill_manual(values = c(palette[4], palette[5]), 
-                    name = "Biological Sex",
-                    labels = c("Female", "Male")) +
-  facet_wrap(~factor(roi_f), nrow = 2, scales = "free_x") +
-  scale_y_continuous(name = "Proportion Correct", 
-                     breaks = seq(0, 1, 0.25), limits = c(0, 1.25), sec.axis = dup_axis()) + 
-  scale_x_continuous(name = "Subfield Thickness (mm^3)") +
-  labs(color = "Biological Sex", group = "roi") + 
-  theme(legend.position = "bottom",
-        legend.direction = "horizontal",
-        legend.box = "horizontal") +
-  theme(panel.spacing.x = unit(0.2, units = "inches"),
-        axis.text.x = element_text(size = 8))
-data_tT2w_plot_MF
-
-ggplot(data = data_tT2w, aes(y = propcorrect, x = tRaHC)) + 
-  geom_point() + geom_smooth(method= "lm", color='#e080de') +
-  ggtitle("Right aHC Thickness and Proportion Correct") + 
-  xlab("Right aHC Thicknesses") + ylab("Proportion Correct") + ylim(0, 1) #indiv subfield
-ggplot(data = data_tT2w, aes(y = propcorrect, x = tLPRC)) + 
-  geom_point() + geom_smooth(method= "lm", color='#e080de') +
-  ggtitle("Left PRC Thickness and Proportion Correct") + 
-  xlab("Left PRC Thicknesses") + ylab("Proportion Correct") + ylim(0, 1) #indiv subfield
-ggplot(data = data_tT2w, aes(y = propcorrect, x = tRaHC, 
-                             color = factor(sex, 
-                                            levels = c("0", "1"), 
-                                            labels = c("Female", "Male")))) +
-  geom_point() + geom_smooth(method = "lm", se = FALSE) +
-  ggtitle("Right aHC Thickness and Proportion Correct") +
-  xlab("Right aHC Thicknesses") + ylab("Proportion Correct") + ylim(0, 1) +
-  labs(color = "Biological Sex") #color by sex
-ggplot(data = data_tT2w, aes(y = propcorrect, x = tLPHC, 
-                             color = factor(sex, 
-                                            levels = c("0", "1"), 
-                                            labels = c("Female", "Male")))) +
-  geom_point() + geom_smooth(method = "lm", se = FALSE) +
-  ggtitle("Left PRC Thickness and Proportion Correct") +
-  xlab("Left PRC Thicknesses") + ylab("Proportion Correct") + ylim(0, 1) +
-  labs(color = "Biological Sex") #color by sex
-
-#### --------------- Section 14: Other MTL Thickness (hr-T2 + regT2) + Proportion Correct (n=25) --------------- ####
-# Partial correlation table between other MTL thickness (hr-T2 + regT2) and propcorrect
-subfields_tMTL_LR
-
-r <- NULL;
-
-for (i in subfields_tMTL_LR) { 
-  subfield_name <- paste(i, "_pcor", sep = "")
-  PC_tsubfield_pcor <- pcor.test(pull(data_tMTL_tT2w[i]), data_tMTL_tT2w$propcorrect, 
-                                 c(data_tMTL_tT2w$sex,data_tMTL_tT2w$age,data_tMTL_tT2w$tiv), method = "pearson")
-  assign(subfield_name, PC_tsubfield_pcor)
-  r <- rbind(r, round(PC_tsubfield_pcor$estimate, digits = 2), round(PC_tsubfield_pcor$p.value, digits = 3))
-  # print(paste(i, "estimate is:", round(PC_tsubfield_pcor$estimate, digits = 2),
-  #             "and p-value is:", round(PC_tsubfield_pcor$p.value, digits = 3)))
-} # ex. tLaHC_pcor
-
-corr_mat_MTLsub(r)
-
-# data_tMTL in long format
-data_tMTL_tT2w_long <- data_tMTL_tT2w %>%
-  pivot_longer(cols = tLERC:tRPHC, names_to = "roi", values_to = "roi_thickness") %>%
-  mutate(sex = as.factor(sex))
-
-# Plots
-subfields_MTL_facet <- c("L ERC", "L PRC", "L PHC",
-                         "R ERC", "R PRC", "R PHC")
-data_tMTL_tT2w_long$roi <- label_value(rep(subfields_MTL_facet, 25))
-data_tMTL_tT2w_plot <- data_tMTL_tT2w_long %>%
-  mutate(roi_f = factor(roi, levels=subfields_MTL_facet)) %>%
-  ggplot(aes(y = propcorrect, 
-             x = roi_thickness, 
-             group = factor(roi_f))) +
-  geom_smooth(method = "lm", color=palette[9]) + 
-  geom_point(color = palette[9]) +
-  facet_wrap(~factor(roi_f), 
-             nrow = 2, scales = "free_x", drop = TRUE) +
-  scale_y_continuous(name = "Proportion Correct",
-                     breaks = seq(0, 1, 0.25), limits = c(0, 1.25), sec.axis = dup_axis()) + 
-  scale_x_continuous(name = "Other MTL Subfield Thickness (mm^3)") +
-  theme(panel.spacing.x = unit(0.2, units = "inches"),
-        axis.text.x = element_text(size = 8))
-data_tMTL_tT2w_plot
-
-data_tMTL_tT2w_plot_MF <- data_tMTL_tT2w_long %>%
-  mutate(roi_f = factor(roi, levels=subfields_T2w_facet)) %>%
-  ggplot(aes(y = propcorrect, 
-             x = roi_thickness,
-             color = factor(sex, 
-                            levels = c("0", "1"), 
-                            labels = c("Female", "Male")), 
-             group = factor(roi_f))) +
-  geom_point() +
-  geom_smooth(method = "lm", aes(group = sex, fill = factor(sex,
-                                                            levels = c("0", "1")))) + 
-  scale_color_manual(values = c(palette[4], palette[5])) +
-  scale_fill_manual(values = c(palette[4], palette[5]), 
-                    name = "Biological Sex",
-                    labels = c("Female", "Male")) +
-  facet_wrap(~factor(roi_f), nrow = 2, scales = "free_x") +
-  scale_y_continuous(name = "Proportion Correct", 
-                     breaks = seq(0, 1, 0.25), limits = c(0, 1.25), sec.axis = dup_axis()) + 
-  scale_x_continuous(name = "Other MTL Subfield Thickness (mm^3)") +
-  labs(color = "Biological Sex", group = "roi") + 
-  theme(legend.position = "bottom",
-        legend.direction = "horizontal",
-        legend.box = "horizontal") +
-  theme(panel.spacing.x = unit(0.2, units = "inches"),
-        axis.text.x = element_text(size = 8))
-data_tMTL_tT2w_plot_MF
-
-ggplot(data = data_tMTL_tT2w, aes(y = propcorrect, x = tRaHC)) + 
-  geom_point() + geom_smooth(method= "lm", color='#e080de') +
-  ggtitle("Right aHC Thickness and Proportion Correct") + 
-  xlab("Right aHC Thicknesses") + ylab("Proportion Correct") + ylim(0, 1) #indiv subfield
-ggplot(data = data_tMTL_tT2w, aes(y = propcorrect, x = tLPRC)) + 
-  geom_point() + geom_smooth(method= "lm", color='#e080de') +
-  ggtitle("Left PRC Thickness and Proportion Correct") + 
-  xlab("Left PRC Thicknesses") + ylab("Proportion Correct") + ylim(0, 1) #indiv subfield
-ggplot(data = data_tMTL_tT2w, aes(y = propcorrect, x = tRaHC, 
-                             color = factor(sex, 
-                                            levels = c("0", "1"), 
-                                            labels = c("Female", "Male")))) +
-  geom_point() + geom_smooth(method = "lm", se = FALSE) +
-  ggtitle("Right aHC Thickness and Proportion Correct") +
-  xlab("Right aHC Thicknesses") + ylab("Proportion Correct") + ylim(0, 1) +
-  labs(color = "Biological Sex") #color by sex
-ggplot(data = data_tMTL_tT2w, aes(y = propcorrect, x = tLPHC, 
-                             color = factor(sex, 
-                                            levels = c("0", "1"), 
-                                            labels = c("Female", "Male")))) +
-  geom_point() + geom_smooth(method = "lm", se = FALSE) +
-  ggtitle("Left PRC Thickness and Proportion Correct") +
-  xlab("Left PRC Thicknesses") + ylab("Proportion Correct") + ylim(0, 1) +
-  labs(color = "Biological Sex") #color by sex
-
-#### --------------------------------------- Section 15: Sex Differences --------------------------------------- ####
-# Behavioral/navigational data analysis for HIGH RES VOLUMES (n=25)
-data_M <- data %>% filter(sex == "1")
-data_F <- data %>% filter(sex == "0")
-sd(data_M$propcorrect, na.rm = TRUE)
-sd(data_F$propcorrect, na.rm = TRUE)
-
-t.test(data_M$propcorrect, data_F$propcorrect)
-t.test(data_M$tm_pathefficiencies, data_F$tm_pathefficiencies)
-
-# Propcorrect data analysis for full data set (n=112)
-data_full_M <- data_full_clean %>% filter(Sex == "M") # data for M
-data_full_F <- data_full_clean %>% filter(Sex == "F") # data for F
-
-t.test(data_full_M[6], data_full_F[6], na.rm=TRUE)
-
-# Questionnaires
-## Video Game
-data_VG <- data_survey_scores %>% 
-  dplyr::select("sub_id", "sex", "VG_hr", "VG_yr", "VG_score")
-
-data_VG_M <- data_VG %>% filter(sex == "M") # data for M, n=59
-data_VG_F <- data_VG %>% filter(sex == "F") # data for F, n=53
-
-t.test(data_VG_M$VG_score, data_VG_F$VG_score, na.rm=TRUE)
-
-## Road Map
-data_RM <- data_survey_scores %>% 
-  dplyr::select("sub_id", "sex", "RM_score")
-
-data_RM_M <- data_RM %>% filter(sex == "M") # data for M
-data_RM_F <- data_RM %>% filter(sex == "F") # data for F
-
-t.test(data_RM_M$RM_score, data_RM_F$RM_score, na.rm=TRUE) 
-
-## SBSOD
-data_SBSOD <- data_survey_scores %>% 
-  dplyr::select("sub_id", "sex", "SBSOD_score")
-
-data_SBSOD_M <- data_SBSOD %>% filter(sex == "M") # data for M
-data_SBSOD_F <- data_SBSOD %>% filter(sex == "F") # data for F
-
-t.test(data_SBSOD_M$SBSOD_score, data_SBSOD_F$SBSOD_score, na.rm=TRUE) # t=-3.889, p=.0001924, df=90.026
-
-## Handedness
-data_hand <- data_survey_scores %>% 
-  dplyr::select("sub_id", "sex", "Hand_score")
-
-data_hand_M <- data_hand %>% filter(sex == "M") # data for M
-data_hand_F <- data_hand %>% filter(sex == "F") # data for F
-
-t.test(data_hand_M$Hand_score, data_hand_F$Hand_score, na.rm=TRUE) # t=-1.9803, p=0.05057, df=94.948
-
-## SOT
-data_SOT <- data_survey_scores %>% 
-  dplyr::select("sub_id", "sex", "SOT_score")
-
-data_SOT_M <- data_SOT %>% filter(sex == "M") # data for M
-data_SOT_F <- data_SOT %>% filter(sex == "F") # data for F
-
-t.test(data_SOT_M$SOT_score, data_SOT_F$SOT_score, na.rm=TRUE) # t=-4.5286, p=1.961e-05, df=83.322
-
-# Proportion correct of specific subfields
-data_cut_M <- data_cut %>% filter(sex == "1")
-data_cut_F <- data_cut %>% filter(sex == "0")
-# LCA23
-pcor.test(data_cut_M$LCA23, data_cut_M$propcorrect, c(data_cut_M$age,data_cut_M$tiv), method = "pearson") 
-  # M: r=.1121404, p=.7153045, n=14
-pcor.test(data_cut_F$LCA23, data_cut_F$propcorrect, c(data_cut_F$age,data_cut_F$tiv), method = "pearson") 
-  # F: r=.2837486, p=.3977876, n=12
-  # vassarstats signif of diff b/w 2 corre coeff: z=, p= (two-tailed)
-# LDG
-pcor.test(data_cut_M$LDG, data_cut_M$propcorrect, c(data_cut_M$age,data_cut_M$tiv), method = "pearson") 
-  # M: r=.3875189, p=.1907798, n=14
-pcor.test(data_cut_F$LDG, data_cut_F$propcorrect, c(data_cut_F$age,data_cut_F$tiv), method = "pearson") 
-  # F: r=-.1670075, p=.623562, n=12
-  # vassarstats signif of diff b/w 2 corre coeff: z=, p= (two-tailed)
-
-# Thickness?
-#LDG
-pcor.test(data_M$tLDG, data_M$propcorrect, c(data_M$age,data_M$tiv), method = "pearson")
-# males: r=-.148, p=.502, n=12, df=21
-pcor.test(data_F$tLDG, data_F$propcorrect, c(data_F$age,data_F$tiv), method = "pearson")
-# females: r=.444, p=.026, n=13, df=23
-# vassarstats signif of diff b/w 2 corre coeff: z=.09, p=.9283 (two-tailed)
+ggplot(data = data_tregT2, aes(y = patheff_acc_only, x = tRERC)) + 
+  geom_point(color = palette_sbfd[5]) + geom_smooth(method = "lm", color = palette_sbfd[5]) +
+  ggtitle("Right ERC Thickness") + 
+  xlab("Right ERC Thickness") + ylab("Path Inefficiency (Correct Trials Only)") + 
+  scale_y_continuous(breaks = seq(1, 10, by = 0.05)) + ylim(1, 1.25) # indiv subfield
